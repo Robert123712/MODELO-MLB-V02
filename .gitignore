@@ -1,0 +1,19 @@
+# Datos personales / sensibles — NUNCA subir
+banca.csv
+apuestas.csv
+*_personal.csv
+
+# Cache de Python
+__pycache__/
+*.pyc
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Entornos virtuales
+venv/
+env/
+
+# Archivos temporales o vacios
+*.tmp
