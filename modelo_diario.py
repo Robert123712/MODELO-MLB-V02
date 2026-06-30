@@ -26,13 +26,16 @@ LIGA_FIP = 4.15
 HFA = 1.04
 N_SIMS = 10_000
 LINEAS = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
+LINEAS_F5 = [3.5, 4.5, 5.5]          # totales de las primeras 5 entradas
 TEMPORADA = 2026
 INICIO_TEMP = "03/25/2026"
 
 # --- PARAMETROS DE CALIBRACION (las perillas del Sprint 4) ---
 AMORTIGUA = 0.6      # 0 = ignora el pitcheo; 1 = efecto completo. 0.6 suaviza extremos
 DISPERSION_K = 4.0   # dispersion de la binomial negativa. Mas bajo = mas varianza/caos
+DISPERSION_K_F5 = 2.4  # F5: menos entradas -> mas varianza relativa -> k mas bajo
 AJUSTE_BASE = 0.94   # calibra el nivel global de carreras para promediar ~8.5 el slate
+FRAC_F5 = 5.0 / 9.0  # las 5 entradas son 5/9 del juego (escala la ofensiva)
 
 # --- PARAMETROS NUEVOS (Sprint 5) ---
 SEMILLA = None       # pon un entero para resultados reproducibles (backtests)
@@ -136,6 +139,7 @@ def carreras_por_juego(nombre_equipo, hoy):
     anotadas = [j["home_score"] if j["home_id"] == tid else j["away_score"]
                 for j in temporada if j["status"] == "Final"]
     if not anotadas:
+        cache_equipo[nombre_equipo] = 4.4
         return 4.4
     # los juegos vienen en orden cronologico: el ultimo es el mas reciente
     n = len(anotadas)
@@ -198,15 +202,23 @@ def split_ofensivo(nombre_equipo, mano):
 def fip_combinado(fip_abridor, ip_abridor, era_bullpen):
     return (fip_abridor * ip_abridor + era_bullpen * (9 - ip_abridor)) / 9
 
+def fip_f5(fip_abridor, ip_abridor, era_bullpen):
+    """#F5: pitcheo que enfrenta el bateador en las primeras 5 entradas.
+    El abridor cubre min(ip_esperadas, 5); si sale antes, el bullpen cubre el
+    resto de las 5. Domina fuertemente el abridor."""
+    ip_en_f5 = min(ip_abridor, 5.0)
+    return (fip_abridor * ip_en_f5 + era_bullpen * (5.0 - ip_en_f5)) / 5.0
+
 def multiplicador_pitcheo(fip_comb):
     """ARREGLO 2: amortigua el efecto del pitcheo hacia 1.0 en vez de lineal puro."""
     crudo = fip_comb / LIGA_FIP
     return 1 + AMORTIGUA * (crudo - 1)
 
-def simular_binom_neg(lam, n):
-    """ARREGLO 1: marcadores con binomial negativa (varianza > media)."""
-    p = DISPERSION_K / (DISPERSION_K + lam)
-    return RNG.negative_binomial(DISPERSION_K, p, n)
+def simular_binom_neg(lam, n, k=DISPERSION_K):
+    """ARREGLO 1: marcadores con binomial negativa (varianza > media).
+    'k' configurable: el F5 usa una dispersion mas baja que el juego completo."""
+    p = k / (k + lam)
+    return RNG.negative_binomial(k, p, n)
 
 def simular(lam_v, lam_c):
     c_v = simular_binom_neg(lam_v, N_SIMS)
@@ -217,6 +229,15 @@ def simular(lam_v, lam_c):
     gana_c = (c_c > c_v) | (empates & moneda)
     overs = {ln: (tot > ln).mean() for ln in LINEAS}
     return overs, gana_c.mean(), ((c_c - c_v) >= 2).mean()
+
+def simular_f5(lam_v, lam_c):
+    """#F5: tras 5 entradas el EMPATE si es un resultado real (no hay desempate).
+    Devuelve (overs_f5, p_casa, p_visita, p_empate) -> ML a 3 vias."""
+    c_v = simular_binom_neg(lam_v, N_SIMS, DISPERSION_K_F5)
+    c_c = simular_binom_neg(lam_c, N_SIMS, DISPERSION_K_F5)
+    tot = c_v + c_c
+    overs = {ln: (tot > ln).mean() for ln in LINEAS_F5}
+    return overs, (c_c > c_v).mean(), (c_v > c_c).mean(), (c_c == c_v).mean()
 
 # ---------------- PROCESO PRINCIPAL ----------------
 
@@ -267,6 +288,16 @@ def correr(fecha=None):
         overs, p_casa, p_casa_rl = simular(lam_v, lam_c)
         totales_slate.append(lam_v + lam_c)
 
+        # #F5: primeras 5 entradas — domina el abridor, el bullpen casi no entra.
+        # Reusa splits L/R y bullpen dinamico; solo cambia el FIP (a 5 IP) y la escala 5/9.
+        pitcheo_c_f5 = fip_f5(fip_c, ip_c, bullpen_era(casa))
+        pitcheo_v_f5 = fip_f5(fip_v, ip_v, bullpen_era(visita))
+        lam_v_f5 = rg_v * split_v * FRAC_F5 * multiplicador_pitcheo(pitcheo_c_f5) * park * AJUSTE_BASE
+        lam_c_f5 = rg_c * split_c * FRAC_F5 * multiplicador_pitcheo(pitcheo_v_f5) * park * AJUSTE_BASE * HFA
+        overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
+        rl_casa_f5 = p_casa_f5 + p_empate_f5      # RL +0.5: "no va perdiendo tras 5" = gana o empata
+        rl_visita_f5 = p_visita_f5 + p_empate_f5
+
         print(f"Inputs: {p_v} FIP {fip_v:.2f} ({ip_v:.1f}IP, {mano_v or '?'}) | "
               f"{p_c} FIP {fip_c:.2f} ({ip_c:.1f}IP, {mano_c or '?'})")
         print(f"Bullpens: {visita} {bullpen_era(visita):.2f} | {casa} {bullpen_era(casa):.2f}")
@@ -277,8 +308,18 @@ def correr(fecha=None):
         print("Overs:  " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs.items()))
         print("Unders: " + " | ".join(f"U{ln} {1-p:.0%}" for ln, p in overs.items()))
 
+        # #F5: primeras 5 entradas
+        print("  [F5] Carreras esp: "
+              f"{visita} {lam_v_f5:.2f} — {casa} {lam_c_f5:.2f} (total {lam_v_f5+lam_c_f5:.2f})")
+        print(f"  [F5] ML 3 vias: {casa} {p_casa_f5:.1%} ({prob_a_momio(p_casa_f5)}) | "
+              f"empate {p_empate_f5:.1%} ({prob_a_momio(p_empate_f5)}) | "
+              f"{visita} {p_visita_f5:.1%} ({prob_a_momio(p_visita_f5)})")
+        print(f"  [F5] RL +0.5: {casa} {rl_casa_f5:.1%} ({prob_a_momio(rl_casa_f5)}) | "
+              f"{visita} {rl_visita_f5:.1%} ({prob_a_momio(rl_visita_f5)})")
+        print("  [F5] Totales: " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs_f5.items()))
+
         # #2: valor contra el mercado
-        jugadas = valor.analizar_juego(odds_slate.get((visita, casa)), visita, casa, p_casa, overs)
+        jugadas = valor.analizar_juego(valor.buscar(odds_slate, visita, casa), visita, casa, p_casa, overs)
         for jg in jugadas:
             print(valor.formato_jugada(jg))
             jugadas_valor.append((visita, casa, jg))
@@ -287,7 +328,10 @@ def correr(fecha=None):
         filas_csv.append(",".join([
             hoy, visita, casa, p_v, p_c,
             f"{lam_v:.2f}", f"{lam_c:.2f}", f"{lam_v+lam_c:.2f}",
-            f"{p_casa:.3f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}"
+            f"{p_casa:.3f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
+            f"{lam_v_f5+lam_c_f5:.2f}", f"{p_casa_f5:.3f}", f"{p_empate_f5:.3f}",
+            f"{p_visita_f5:.3f}", f"{overs_f5[4.5]:.3f}",
+            f"{rl_casa_f5:.3f}", f"{rl_visita_f5:.3f}"
         ]))
 
     if totales_slate:
@@ -310,7 +354,8 @@ def correr(fecha=None):
     guardadas = 0
     with open(archivo, "a", encoding="utf-8") as f:
         if nuevo:
-            f.write("fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95\n")
+            f.write("fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,"
+                    "total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5\n")
         for fila in filas_csv:
             partes = fila.split(",")
             clave = (partes[0], partes[1], partes[2])

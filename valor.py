@@ -14,6 +14,29 @@ import urllib.parse
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "").strip()
 UMBRAL_EV = 0.03   # solo resalta jugadas con EV > 3%
 
+# Apodos de los 30 equipos. Normaliza nombres entre MLB StatsAPI y The Odds API
+# (p.ej. "Athletics" vs "Oakland Athletics") para que el cruce no falle en silencio.
+_APODOS = [
+    "Diamondbacks", "Braves", "Orioles", "Red Sox", "White Sox", "Cubs", "Reds",
+    "Guardians", "Rockies", "Tigers", "Astros", "Royals", "Angels", "Dodgers",
+    "Marlins", "Brewers", "Twins", "Yankees", "Mets", "Athletics", "Phillies",
+    "Pirates", "Padres", "Giants", "Mariners", "Cardinals", "Rays", "Rangers",
+    "Blue Jays", "Nationals",
+]
+
+def _canon(nombre):
+    """Reduce cualquier variante de nombre a su apodo canonico ('Oakland Athletics'
+    y 'Athletics' -> 'Athletics'). Si no reconoce el equipo, usa el nombre limpio."""
+    n = (nombre or "").lower()
+    for apodo in _APODOS:
+        if apodo.lower() in n:
+            return apodo
+    return n.strip()
+
+def buscar(odds_slate, visita, casa):
+    """Cruce tolerante a diferencias de nombre entre las dos APIs."""
+    return odds_slate.get((_canon(visita), _canon(casa)))
+
 # ---------------- CONVERSIONES ----------------
 
 def americano_a_decimal(m):
@@ -55,7 +78,7 @@ def obtener_odds():
         return {}
     salida = {}
     for ev in data:
-        clave = (ev.get("away_team"), ev.get("home_team"))
+        clave = (_canon(ev.get("away_team")), _canon(ev.get("home_team")))
         salida[clave] = ev
     return salida
 
@@ -74,6 +97,34 @@ def _mejor_precio(odds_evento, mercado, nombre):
                 if mejor is None or o["price"] > mejor[0]:
                     mejor = (o["price"], o.get("point"), casa["title"])
     return mejor  # (precio_americano, punto, casa) o None
+
+def _linea_total_consenso(odds_evento):
+    """Punto (linea) de total mas repetido entre las casas. Evita el bug de comparar
+    el Over de una linea contra el Under de otra al de-viguear."""
+    from collections import Counter
+    puntos = Counter()
+    for casa in odds_evento.get("bookmakers", []):
+        for m in casa.get("markets", []):
+            if m["key"] != "totals":
+                continue
+            for o in m["outcomes"]:
+                if o["name"] == "Over" and o.get("point") is not None:
+                    puntos[o["point"]] += 1
+    return puntos.most_common(1)[0][0] if puntos else None
+
+def _mejor_precio_linea(odds_evento, mercado, nombre, punto):
+    """Mejor momio para 'nombre' SOLO en el punto dado (ambos lados en la misma linea)."""
+    mejor = None
+    for casa in odds_evento.get("bookmakers", []):
+        for m in casa.get("markets", []):
+            if m["key"] != mercado:
+                continue
+            for o in m["outcomes"]:
+                if o["name"] != nombre or o.get("point") != punto:
+                    continue
+                if mejor is None or o["price"] > mejor[0]:
+                    mejor = (o["price"], o.get("point"), casa["title"])
+    return mejor
 
 def _prob_over_interp(overs, linea):
     """Interpola la prob de over del modelo a la linea exacta del mercado."""
@@ -114,11 +165,11 @@ def analizar_juego(odds_evento, visita, casa, p_casa, overs):
                     "momio": precio, "ev": ev, "libro": libro,
                 })
 
-    # ---- Totales (Over/Under) ----
-    over = _mejor_precio(odds_evento, "totals", "Over")
-    under = _mejor_precio(odds_evento, "totals", "Under")
-    if over and under and over[1] is not None:
-        linea = over[1]
+    # ---- Totales (Over/Under) — ambos lados forzados a la MISMA linea (consenso) ----
+    linea = _linea_total_consenso(odds_evento)
+    over = _mejor_precio_linea(odds_evento, "totals", "Over", linea) if linea is not None else None
+    under = _mejor_precio_linea(odds_evento, "totals", "Under", linea) if linea is not None else None
+    if over and under:
         p_over = _prob_over_interp(overs, linea)
         do = americano_a_decimal(over[0])
         du = americano_a_decimal(under[0])
