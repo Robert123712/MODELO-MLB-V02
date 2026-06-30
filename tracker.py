@@ -1,6 +1,7 @@
 # ============================================================
 # TRACKER DE APUESTAS — diario personal + calificador automatico
 #   - Registro interactivo de lo que apostaste (modelo o read propio)
+#   - Apuestas DERECHAS y PARLAYS (multi-pata, gana solo si TODAS pegan)
 #   - Califica contra el resultado REAL de MLB StatsAPI (incluye F5 por entrada)
 #   - Reporte: record, ROI, desglose por mercado y curva de bankroll
 # Uso:
@@ -11,7 +12,7 @@
 import csv
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 
 import statsapi
 
@@ -24,8 +25,10 @@ except Exception:
     pass
 
 ARCHIVO = "apuestas.csv"
+# parlay_id vacio = apuesta derecha. Las patas de un parlay comparten parlay_id;
+# el stake del parlay vive SOLO en su primera pata (las demas lo dejan vacio).
 CAMPOS = ["fecha", "visita", "casa", "mercado", "pick", "linea",
-          "momio", "stake", "estado", "resultado", "ganancia"]
+          "momio", "stake", "parlay_id", "estado", "resultado", "ganancia"]
 
 MERCADOS = {
     "ML":   "Moneyline juego completo        (pick: casa/visita)",
@@ -36,7 +39,7 @@ MERCADOS = {
     "TOT5": "Total F5                        (pick: over/under, requiere linea)",
 }
 
-# ---------------- CALIFICACION ----------------
+# ---------------- CALIFICACION DE UNA PATA ----------------
 
 def _resultado_juego(fecha, visita, casa):
     """Busca el juego en la fecha y devuelve (fh, fa, f5h, f5a) o None si no es Final
@@ -65,7 +68,7 @@ def _resultado_juego(fecha, visita, casa):
 
 
 def _calificar(mercado, pick, linea, fh, fa, f5h, f5a):
-    """Devuelve 'GANADA' / 'PERDIDA' / 'PUSH'."""
+    """Devuelve 'GANADA' / 'PERDIDA' / 'PUSH' para una pata."""
     pick = (pick or "").strip().lower()
 
     if mercado == "ML":
@@ -100,8 +103,8 @@ def _calificar(mercado, pick, linea, fh, fa, f5h, f5a):
     return "PERDIDA"
 
 
-def _ganancia(resultado, momio, stake):
-    """Ganancia NETA en unidades para esa apuesta."""
+def _ganancia_directa(resultado, momio, stake):
+    """Ganancia NETA en unidades de una apuesta derecha (1 pata)."""
     stake = float(stake)
     if resultado == "PUSH":
         return 0.0
@@ -114,44 +117,124 @@ def _requiere_f5(mercado):
     return mercado in ("ML5", "RL5", "TOT5")
 
 
-def calificar_pendientes():
-    """Recorre apuestas.csv, califica las que ya terminaron y reescribe el archivo."""
+# ---------------- LIQUIDACION DE UNA UNIDAD (derecha o parlay) ----------------
+
+def _stake_unidad(patas):
+    """El stake vive en la pata que lo tenga (primera del parlay, o la unica)."""
+    for p in patas:
+        if (p.get("stake") or "").strip():
+            return float(p["stake"])
+    return 0.0
+
+
+def _settle(patas):
+    """Liquida una unidad ya calificada. Devuelve (resultado, ganancia_neta).
+    Derecha = 1 pata. Parlay = N patas: gana solo si todas ganan; una pata en
+    PUSH se cae y el parlay se recalcula con las que quedan."""
+    stake = _stake_unidad(patas)
+
+    if len(patas) == 1:
+        r = patas[0]["resultado"]
+        return r, _ganancia_directa(r, patas[0]["momio"], stake)
+
+    # --- PARLAY ---
+    if any(p["resultado"] == "PERDIDA" for p in patas):
+        return "PERDIDA", -stake
+    vivas = [p for p in patas if p["resultado"] == "GANADA"]
+    if not vivas:                                  # todas hicieron push
+        return "PUSH", 0.0
+    decimal = 1.0
+    for p in vivas:
+        decimal *= americano_a_decimal(p["momio"])
+    return "GANADA", stake * (decimal - 1)
+
+
+def _agrupar(filas):
+    """Agrupa filas en unidades de apuesta: cada derecha es 1 unidad; las patas
+    con el mismo parlay_id forman 1 unidad."""
+    sueltas, parlays = [], {}
+    for f in filas:
+        pid = (f.get("parlay_id") or "").strip()
+        if pid:
+            parlays.setdefault(pid, []).append(f)
+        else:
+            sueltas.append([f])
+    return sueltas + list(parlays.values())
+
+
+def _label(unidad):
+    return unidad[0]["mercado"] if len(unidad) == 1 else f"PARLAY x{len(unidad)}"
+
+# ---------------- LECTURA / ESCRITURA ----------------
+
+def _leer():
+    """Lee apuestas.csv y normaliza filas viejas (sin parlay_id) para compatibilidad."""
     if not os.path.exists(ARCHIVO):
-        print(f"No existe {ARCHIVO} todavia. Registra apuestas con: python tracker.py log")
-        return []
+        return None
     with open(ARCHIVO, encoding="utf-8", newline="") as f:
         filas = list(csv.DictReader(f))
-
-    cache_juego = {}
-    nuevas = 0
     for fila in filas:
-        if fila.get("estado") == "calificada":
-            continue
-        clave = (fila["fecha"], fila["visita"], fila["casa"])
-        if clave not in cache_juego:
-            cache_juego[clave] = _resultado_juego(*clave)
-        res = cache_juego[clave]
-        if res is None:
-            continue                              # aun no es Final
-        if res == "NOJUEGO":
-            print(f"⚠ No encontre el juego {fila['visita']} @ {fila['casa']} ({fila['fecha']})")
-            continue
-        fh, fa, f5h, f5a = res
-        if _requiere_f5(fila["mercado"]) and (f5h is None or f5a is None):
-            print(f"⚠ Sin marcador por entrada para F5: {fila['visita']} @ {fila['casa']}")
-            continue
-        resultado = _calificar(fila["mercado"], fila["pick"], fila.get("linea") or 0,
-                               fh, fa, f5h, f5a)
-        fila["resultado"] = resultado
-        fila["ganancia"] = f"{_ganancia(resultado, fila['momio'], fila['stake']):.3f}"
-        fila["estado"] = "calificada"
-        nuevas += 1
+        for c in CAMPOS:
+            fila.setdefault(c, "")
+    return filas
 
+
+def _guardar(filas):
     with open(ARCHIVO, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=CAMPOS)
+        w = csv.DictWriter(f, fieldnames=CAMPOS, extrasaction="ignore")
         w.writeheader()
         w.writerows(filas)
 
+# ---------------- CALIFICAR PENDIENTES ----------------
+
+def calificar_pendientes():
+    """Califica las unidades cuyos juegos ya terminaron y reescribe el archivo."""
+    filas = _leer()
+    if filas is None:
+        print(f"No existe {ARCHIVO} todavia. Registra apuestas con: python tracker.py log")
+        return []
+
+    cache = {}
+
+    def _res(p):
+        clave = (p["fecha"], p["visita"], p["casa"])
+        if clave not in cache:
+            cache[clave] = _resultado_juego(*clave)
+        return cache[clave]
+
+    nuevas = 0
+    for unidad in _agrupar(filas):
+        if all(p.get("estado") == "calificada" for p in unidad):
+            continue
+        # un parlay no se liquida hasta que TODAS sus patas tengan resultado final
+        resueltos = []
+        listo = True
+        for p in unidad:
+            r = _res(p)
+            if r is None:
+                listo = False; break
+            if r == "NOJUEGO":
+                print(f"⚠ No encontre {p['visita']} @ {p['casa']} ({p['fecha']})")
+                listo = False; break
+            fh, fa, f5h, f5a = r
+            if _requiere_f5(p["mercado"]) and (f5h is None or f5a is None):
+                print(f"⚠ Sin marcador por entrada (F5): {p['visita']} @ {p['casa']}")
+                listo = False; break
+            resueltos.append((p, r))
+        if not listo:
+            continue
+
+        for p, (fh, fa, f5h, f5a) in resueltos:
+            p["resultado"] = _calificar(p["mercado"], p["pick"], p.get("linea") or 0,
+                                        fh, fa, f5h, f5a)
+            p["estado"] = "calificada"
+        _, ganancia = _settle(unidad)
+        # la ganancia de la unidad se guarda en la primera pata; las demas, vacia
+        for i, p in enumerate(unidad):
+            p["ganancia"] = f"{ganancia:.3f}" if i == 0 else ""
+        nuevas += 1
+
+    _guardar(filas)
     if nuevas:
         print(f"✅ {nuevas} apuestas nuevas calificadas.\n")
     return filas
@@ -162,48 +245,70 @@ def _fmt_u(x):
     return f"{x:+.2f}u"
 
 
+def _resumen(unidades):
+    w = l = p = 0
+    stake = neto = 0.0
+    for u in unidades:
+        r, gan = _settle(u)
+        stake += _stake_unidad(u)
+        neto += gan
+        if r == "GANADA":
+            w += 1
+        elif r == "PERDIDA":
+            l += 1
+        else:
+            p += 1
+    roi = neto / stake if stake else 0.0
+    acierto = w / (w + l) if (w + l) else 0.0
+    return w, l, p, stake, neto, roi, acierto
+
+
 def reporte(filas):
-    cal = [f for f in filas if f.get("estado") == "calificada"]
-    pend = [f for f in filas if f.get("estado") != "calificada"]
-    print("=" * 48)
-    print("           TRACKER DE APUESTAS")
-    print("=" * 48)
+    unidades = _agrupar(filas)
+    cal = [u for u in unidades if all(p.get("estado") == "calificada" for p in u)]
+    pend = [u for u in unidades if u not in cal]
+    print("=" * 50)
+    print("             TRACKER DE APUESTAS")
+    print("=" * 50)
     print(f"Calificadas: {len(cal)} | Pendientes: {len(pend)}\n")
     if not cal:
         print("Aun no hay apuestas calificadas (¿los juegos ya terminaron?).")
         return
 
-    def resumen(grupo):
-        w = sum(1 for f in grupo if f["resultado"] == "GANADA")
-        l = sum(1 for f in grupo if f["resultado"] == "PERDIDA")
-        p = sum(1 for f in grupo if f["resultado"] == "PUSH")
-        stake = sum(float(f["stake"]) for f in grupo)
-        neto = sum(float(f["ganancia"]) for f in grupo)
-        roi = neto / stake if stake else 0.0
-        decididas = w + l
-        acierto = w / decididas if decididas else 0.0
-        return w, l, p, stake, neto, roi, acierto
-
-    w, l, p, stake, neto, roi, acierto = resumen(cal)
+    w, l, p, stake, neto, roi, acierto = _resumen(cal)
     print("GLOBAL")
     print(f"  Record: {w}-{l}" + (f"-{p} (push)" if p else ""))
     print(f"  Stake total: {stake:.2f}u | Neto: {_fmt_u(neto)} | ROI: {roi:+.1%}")
     print(f"  % acierto (sin push): {acierto:.1%}\n")
 
-    print("POR MERCADO")
-    for mkt in MERCADOS:
-        grupo = [f for f in cal if f["mercado"] == mkt]
+    print("POR TIPO / MERCADO")
+    etiquetas = list(MERCADOS) + ["PARLAY"]
+    for et in etiquetas:
+        if et == "PARLAY":
+            grupo = [u for u in cal if len(u) > 1]
+        else:
+            grupo = [u for u in cal if len(u) == 1 and u[0]["mercado"] == et]
         if not grupo:
             continue
-        w, l, p, stake, neto, roi, _ = resumen(grupo)
+        w, l, p, stake, neto, roi, _ = _resumen(grupo)
         rec = f"{w}-{l}" + (f"-{p}" if p else "")
-        print(f"  {mkt:5} | {len(grupo):2} ap | {rec:8} | {_fmt_u(neto):>8} | ROI {roi:+.1%}")
+        print(f"  {et:7} | {len(grupo):2} ap | {rec:8} | {_fmt_u(neto):>8} | ROI {roi:+.1%}")
+
+    # detalle de parlays
+    parlays = [u for u in cal if len(u) > 1]
+    if parlays:
+        print("\nPARLAYS")
+        for u in parlays:
+            r, gan = _settle(u)
+            patas = " + ".join(f"{p['mercado']}:{p['pick']}{(' '+p['linea']) if p['linea'] else ''}" for p in u)
+            print(f"  [{r:7}] {_fmt_u(gan):>7} | {u[0]['fecha']} | {patas}")
 
     print("\nBANKROLL (neto acumulado por fecha)")
     porfecha = {}
-    for f in cal:
-        porfecha.setdefault(f["fecha"], 0.0)
-        porfecha[f["fecha"]] += float(f["ganancia"])
+    for u in cal:
+        _, gan = _settle(u)
+        porfecha.setdefault(u[0]["fecha"], 0.0)
+        porfecha[u[0]["fecha"]] += gan
     acum = 0.0
     for fch in sorted(porfecha, key=lambda d: (d[6:10], d[0:2], d[3:5])):
         acum += porfecha[fch]
@@ -211,16 +316,51 @@ def reporte(filas):
 
 # ---------------- REGISTRO INTERACTIVO ----------------
 
-def _pedir(msg, opciones=None, permitir_vacio=False):
+def _pedir(msg, opciones=None):
     while True:
         val = input(msg).strip()
-        if not val and permitir_vacio:
-            return ""
         if opciones and val.lower() not in opciones:
             print(f"   Opciones validas: {', '.join(opciones)}")
             continue
-        if val or permitir_vacio:
+        if val:
             return val
+
+
+def _capturar_pata(juegos, fecha):
+    """Captura UNA pata (juego + mercado + pick + linea + momio). None si cancela."""
+    while True:
+        sel = input("   Numero de juego (Enter para cancelar): ").strip()
+        if not sel:
+            return None
+        try:
+            g = juegos[int(sel) - 1]
+            break
+        except (ValueError, IndexError):
+            print("   Numero invalido.")
+
+    print("   Mercados: " + " | ".join(MERCADOS))
+    mercado = _pedir("   Mercado: ", opciones=[m.lower() for m in MERCADOS]).upper()
+
+    if mercado in ("ML", "RL", "RL5"):
+        pick = _pedir("   Pick (casa/visita): ", opciones=["casa", "visita"]).lower()
+    elif mercado == "ML5":
+        pick = _pedir("   Pick (casa/empate/visita): ", opciones=["casa", "empate", "visita"]).lower()
+    else:
+        pick = _pedir("   Pick (over/under): ", opciones=["over", "under"]).lower()
+
+    linea = ""
+    if mercado in ("RL", "RL5"):
+        linea = _pedir(f"   Spread firmado (ej {'-1.5/+1.5' if mercado=='RL' else '-0.5/+0.5'}): ")
+    elif mercado in ("TOT", "TOT5"):
+        linea = _pedir("   Linea (ej 8.5): ")
+
+    momio = _pedir("   Momio americano de esta pata (ej +110 o -130): ")
+    return {
+        "fecha": fecha, "visita": g["away_name"], "casa": g["home_name"],
+        "mercado": mercado, "pick": pick, "linea": linea, "momio": momio,
+        "stake": "", "parlay_id": "", "estado": "pendiente",
+        "resultado": "", "ganancia": "",
+    }
 
 
 def registrar(fecha=None, juegos=None):
@@ -235,7 +375,7 @@ def registrar(fecha=None, juegos=None):
             print("No pude bajar el calendario.")
             return
 
-    if input(f"\n¿Registrar apuestas de {fecha}? (Enter para saltar / s para registrar): ").strip().lower() not in ("s", "si", "y"):
+    if input(f"\n¿Registrar apuestas de {fecha}? (Enter salta / s registra): ").strip().lower() not in ("s", "si", "y"):
         return
 
     print("\nJuegos del dia:")
@@ -244,50 +384,50 @@ def registrar(fecha=None, juegos=None):
 
     nuevas = []
     while True:
-        sel = input("\nNumero de juego (Enter para terminar): ").strip()
-        if not sel:
+        tipo = input("\nTipo (d=derecha / p=parlay / Enter=terminar): ").strip().lower()
+        if not tipo:
             break
-        try:
-            g = juegos[int(sel) - 1]
-        except (ValueError, IndexError):
-            print("   Numero invalido."); continue
-        visita, casa = g["away_name"], g["home_name"]
 
-        print("   Mercados: " + " | ".join(MERCADOS))
-        mercado = _pedir("   Mercado: ", opciones=[m.lower() for m in MERCADOS]).upper()
+        if tipo == "p":
+            print("  -- Arma el parlay: agrega patas; Enter en 'numero de juego' para cerrarlo --")
+            patas = []
+            while True:
+                pata = _capturar_pata(juegos, fecha)
+                if pata is None:
+                    break
+                patas.append(pata)
+                print(f"   ✓ Pata {len(patas)}: {pata['mercado']} {pata['pick']} "
+                      f"{pata['linea']} @ {pata['momio']}")
+            if len(patas) < 2:
+                print("   Un parlay necesita 2+ patas. Cancelado.")
+                continue
+            stake = _pedir(f"   Stake TOTAL del parlay ({len(patas)} patas, ej 1): ")
+            pid = datetime.now().strftime("P%Y%m%d%H%M%S")
+            for i, pata in enumerate(patas):
+                pata["parlay_id"] = pid
+                pata["stake"] = stake if i == 0 else ""    # stake solo en la 1a pata
+            nuevas.extend(patas)
+            print(f"   ✅ Parlay de {len(patas)} patas guardado (stake {stake}u)")
 
-        if mercado in ("ML", "RL", "RL5"):
-            pick = _pedir("   Pick (casa/visita): ", opciones=["casa", "visita"]).lower()
-        elif mercado == "ML5":
-            pick = _pedir("   Pick (casa/empate/visita): ", opciones=["casa", "empate", "visita"]).lower()
-        else:  # TOT / TOT5
-            pick = _pedir("   Pick (over/under): ", opciones=["over", "under"]).lower()
-
-        linea = ""
-        if mercado in ("RL", "RL5"):
-            linea = _pedir(f"   Spread firmado del lado elegido (ej {'-1.5/+1.5' if mercado=='RL' else '-0.5/+0.5'}): ")
-        elif mercado in ("TOT", "TOT5"):
-            linea = _pedir("   Linea (ej 8.5): ")
-
-        momio = _pedir("   Momio americano (ej +110 o -130): ")
-        stake = _pedir("   Stake (unidades, ej 1): ")
-
-        nuevas.append({
-            "fecha": fecha, "visita": visita, "casa": casa,
-            "mercado": mercado, "pick": pick, "linea": linea,
-            "momio": momio, "stake": stake,
-            "estado": "pendiente", "resultado": "", "ganancia": "",
-        })
-        print(f"   ✓ Registrada: {mercado} {pick} {linea} @ {momio}, {stake}u")
+        elif tipo == "d":
+            pata = _capturar_pata(juegos, fecha)
+            if pata is None:
+                continue
+            pata["stake"] = _pedir("   Stake (unidades, ej 1): ")
+            nuevas.append(pata)
+            print(f"   ✓ Registrada: {pata['mercado']} {pata['pick']} "
+                  f"{pata['linea']} @ {pata['momio']}, {pata['stake']}u")
+        else:
+            print("   Escribe 'd', 'p' o Enter.")
 
     if nuevas:
         nuevo = not os.path.exists(ARCHIVO)
         with open(ARCHIVO, "a", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=CAMPOS)
+            w = csv.DictWriter(f, fieldnames=CAMPOS, extrasaction="ignore")
             if nuevo:
                 w.writeheader()
             w.writerows(nuevas)
-        print(f"\n✅ {len(nuevas)} apuestas guardadas en {ARCHIVO}")
+        print(f"\n✅ {len(nuevas)} filas guardadas en {ARCHIVO}")
 
 
 if __name__ == "__main__":
