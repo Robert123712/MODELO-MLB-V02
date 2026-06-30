@@ -369,6 +369,13 @@ def correr(fecha=None):
     print(f"✅ {guardadas} predicciones guardadas en {archivo}" +
           (f" ({omitidas} duplicadas omitidas)" if omitidas else ""))
 
+    # Registro interactivo de apuestas (se salta solo si no hay terminal)
+    try:
+        import tracker
+        tracker.registrar(hoy, juegos)
+    except Exception as e:
+        print(f"(tracker no disponible: {e})")
+
 
 if __name__ == "__main__":
     import sys as _sys
