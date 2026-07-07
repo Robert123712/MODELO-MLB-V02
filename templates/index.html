@@ -4,443 +4,528 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MLB Modelo — Monte Carlo</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
-        }
-      }
-    }
-  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-</head>
-<body class="bg-slate-900 text-slate-100 min-h-screen font-[Inter]">
+  <style>
+    /* ============ tokens (tema oscuro) ============ */
+    :root {
+      --bg:        #0f1115;
+      --surface:   #171a21;
+      --surface-2: #1e222b;
+      --border:    #2a2f3a;
+      --border-soft: #232833;
+      --ink:       #f2f4f8;   /* texto primario */
+      --ink-2:     #a9b0bd;   /* texto secundario */
+      --ink-3:     #6d7482;   /* texto apagado */
+      --accent:    #5c9ce6;   /* un solo acento (énfasis) */
+      --accent-soft: rgba(92,156,230,.12);
+      --ev:        #3fce8f;   /* reservado: jugadas +EV */
+      --ev-soft:   rgba(63,206,143,.10);
+      --danger:    #e66767;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+      min-height: 100vh;
+    }
+    a { color: var(--accent); }
 
-  <header class="border-b border-slate-700 bg-slate-800/50 backdrop-blur sticky top-0 z-50">
-    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+    /* ============ layout ============ */
+    header.top {
+      position: sticky; top: 0; z-index: 50;
+      background: rgba(15,17,21,.92); backdrop-filter: blur(6px);
+      border-bottom: 1px solid var(--border);
+    }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+    header.top .wrap { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; padding-bottom: 12px; }
+    header.top h1 { font-size: 19px; font-weight: 800; letter-spacing: -.01em; }
+    header.top p  { font-size: 12px; color: var(--ink-3); }
+    #status-indicator { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 7px; }
+    .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--ink-3); display: inline-block; }
+    .dot.ok { background: var(--ev); } .dot.run { background: #e0a93e; } .dot.err { background: var(--danger); }
+
+    main { padding: 22px 0 60px; }
+
+    /* controles */
+    .controls {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      padding: 16px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-bottom: 22px;
+    }
+    .controls label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 6px; }
+    .controls input[type=date] {
+      background: var(--surface-2); border: 1px solid var(--border); color: var(--ink);
+      border-radius: 9px; padding: 10px 12px; font: inherit; color-scheme: dark; min-width: 180px;
+    }
+    button { font: inherit; cursor: pointer; }
+    .btn-primary {
+      background: var(--accent); color: #0c1524; font-weight: 700; border: none;
+      border-radius: 9px; padding: 11px 22px;
+    }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-ghost { background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--border); border-radius: 9px; padding: 11px 13px; }
+    .calib { font-size: 12px; color: var(--ink-3); font-family: ui-monospace, monospace; margin-top: 10px; width: 100%; }
+
+    /* resumen del slate */
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    .chip { font-size: 12.5px; font-weight: 600; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border); border-radius: 99px; padding: 5px 13px; }
+
+    /* ============ tarjeta de juego ============ */
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      margin-bottom: 22px; overflow: hidden;
+    }
+    .card-head {
+      display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: start;
+      padding: 18px 20px 14px; border-bottom: 1px solid var(--border-soft);
+    }
+    .team .tag { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: var(--ink-3); text-transform: uppercase; }
+    .team h3 { font-size: 18px; font-weight: 800; letter-spacing: -.01em; margin: 2px 0 3px; }
+    .team .pitcher { font-size: 13.5px; color: var(--ink-2); font-weight: 600; }
+    .team .pitmeta { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+    .team.home { text-align: right; }
+    .mid { text-align: center; padding-top: 4px; }
+    .mid .lam { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .mid .lamlbl { font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .08em; margin-top: 1px; }
+    .mid .park { font-size: 11.5px; color: var(--ink-3); margin-top: 6px; }
+
+    .card-body { padding: 6px 20px 18px; }
+    section.block { margin-top: 16px; }
+    .block h4 {
+      font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--ink-3); margin-bottom: 8px;
+    }
+    .block h4 .note { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ink-3); }
+
+    .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px 26px; }
+
+    /* ============ tablas ============ */
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th {
+      font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--ink-3); text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border);
+    }
+    th:first-child, td:first-child { text-align: left; padding-left: 2px; }
+    td { padding: 7px 8px; text-align: right; font-size: 15px; border-bottom: 1px solid var(--border-soft); color: var(--ink); }
+    tr:last-child td { border-bottom: none; }
+    td.lbl { color: var(--ink-2); font-size: 13.5px; font-weight: 600; }
+    td.odds { color: var(--ink-2); font-family: ui-monospace, 'SF Mono', monospace; font-size: 13.5px; }
+    tr.fav td.lbl { color: var(--ink); }
+    tr.fav td.lbl::before { content: '●'; color: var(--accent); font-size: 9px; margin-right: 6px; vertical-align: 1px; }
+    tr.fav td { font-weight: 700; }
+    tr.hl td { background: var(--accent-soft); }
+    tr.hl td:first-child { border-left: 2px solid var(--accent); padding-left: 6px; border-radius: 2px 0 0 2px; }
+    .hl-note { font-size: 11px; color: var(--accent); font-weight: 600; }
+
+    /* marcadores */
+    .scores { display: flex; flex-wrap: wrap; gap: 8px; }
+    .score {
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px;
+      padding: 7px 13px; text-align: center;
+    }
+    .score .sc { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .score .pr { font-size: 11.5px; color: var(--ink-2); margin-top: 1px; }
+
+    /* F5 */
+    .f5wrap { border-top: 1px solid var(--border-soft); margin-top: 18px; padding-top: 14px; }
+    .f5head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+    .f5head h4 { margin-bottom: 0; color: var(--accent); }
+    .f5head span { font-size: 12.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+    /* +EV */
+    .ev {
+      margin-top: 16px; background: var(--ev-soft); border: 1px solid rgba(63,206,143,.28);
+      border-radius: 10px; padding: 12px 14px; overflow-x: auto;
+    }
+    .ev h4 { color: var(--ev); margin-bottom: 6px; }
+    .ev table td { border-bottom-color: rgba(63,206,143,.12); }
+
+    /* bateo */
+    details.bateo { margin-top: 16px; border-top: 1px solid var(--border-soft); padding-top: 12px; }
+    details.bateo summary {
+      cursor: pointer; font-size: 12px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--ink-3); list-style: none; user-select: none;
+    }
+    details.bateo summary::before { content: '▸ '; color: var(--ink-3); }
+    details[open].bateo summary::before { content: '▾ '; }
+    details.bateo summary:hover { color: var(--ink-2); }
+    .bateo-team { margin-top: 12px; overflow-x: auto; }
+    .bateo-team h5 { font-size: 12px; color: var(--ink-2); font-weight: 700; margin-bottom: 5px; }
+    .bateo-team td, .bateo-team th { font-size: 13px; padding: 5px 7px; }
+    .bateo-team td.name { text-align: left; font-weight: 600; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* estados */
+    .skeleton { display: grid; gap: 16px; }
+    .sk { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; height: 130px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: .55 } 50% { opacity: 1 } }
+    .empty { text-align: center; padding: 70px 0; color: var(--ink-2); }
+    .empty .big { font-size: 44px; margin-bottom: 12px; }
+    .error {
+      background: rgba(230,103,103,.1); border: 1px solid rgba(230,103,103,.35);
+      border-radius: 10px; padding: 14px; color: #f1a3a3; font-size: 14px;
+    }
+    .hidden { display: none; }
+    footer { border-top: 1px solid var(--border-soft); padding: 16px 0; text-align: center; font-size: 12px; color: var(--ink-3); }
+
+    @media (max-width: 640px) {
+      .card-head { grid-template-columns: 1fr; }
+      .team.home { text-align: left; }
+      .mid { text-align: left; padding: 4px 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="top">
+    <div class="wrap">
       <div>
-        <h1 class="text-xl font-bold text-white tracking-tight">⚾ MLB Modelo</h1>
-        <p class="text-xs text-slate-400 mt-0.5">Simulador Monte Carlo — v3</p>
+        <h1>⚾ MLB Modelo</h1>
+        <p>Simulador Monte Carlo — v3</p>
       </div>
-      <div class="flex items-center gap-3 text-sm text-slate-400">
-        <span id="status-indicator" class="flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-slate-600"></span>
-          Listo
-        </span>
-      </div>
+      <span id="status-indicator"><span class="dot"></span> Listo</span>
     </div>
   </header>
 
-  <main class="max-w-6xl mx-auto px-4 py-6">
+  <main class="wrap">
 
-    <!-- Controls -->
-    <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 shadow-lg mb-6">
-      <div class="flex flex-col sm:flex-row items-start sm:items-end gap-4">
-        <div class="flex-1 w-full sm:w-auto">
-          <label for="fecha" class="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">Fecha</label>
-          <input type="date" id="fecha"
-                 class="w-full sm:w-56 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white
-                        focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                        [color-scheme:dark]">
-        </div>
-        <div class="flex gap-2 w-full sm:w-auto">
-          <button id="btn-run"
-                  class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold
-                         px-6 py-2.5 rounded-lg transition-all duration-150 shadow-lg shadow-blue-600/20
-                         disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-blue-600">
-            <span class="flex items-center justify-center gap-2">
-              <svg id="spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-              </svg>
-              <span id="btn-text">Correr modelo</span>
-            </span>
-          </button>
-          <button id="btn-hoy"
-                  class="bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-2.5 rounded-lg text-sm transition-colors"
-                  title="Hoy">📅</button>
-        </div>
+    <div class="controls">
+      <div>
+        <label for="fecha">Fecha</label>
+        <input type="date" id="fecha">
       </div>
-      <div id="calibracion-info" class="mt-3 hidden">
-        <p class="text-xs text-slate-500 font-mono"></p>
-      </div>
+      <button id="btn-run" class="btn-primary">Correr modelo</button>
+      <button id="btn-hoy" class="btn-ghost" title="Hoy">📅 Hoy</button>
+      <p id="calibracion-info" class="calib hidden"></p>
     </div>
 
-    <!-- Loading skeleton -->
-    <div id="skeleton" class="hidden space-y-4">
-      <div class="h-8 bg-slate-800 rounded-lg w-48 animate-pulse"></div>
-      <div class="grid gap-4 md:grid-cols-2">
-        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 animate-pulse">
-          <div class="h-5 bg-slate-700 rounded w-3/4 mb-4"></div>
-          <div class="space-y-2">
-            <div class="h-3 bg-slate-700 rounded w-full"></div>
-            <div class="h-3 bg-slate-700 rounded w-5/6"></div>
-            <div class="h-3 bg-slate-700 rounded w-4/6"></div>
-          </div>
-        </div>
-        <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 animate-pulse">
-          <div class="h-5 bg-slate-700 rounded w-3/4 mb-4"></div>
-          <div class="space-y-2">
-            <div class="h-3 bg-slate-700 rounded w-full"></div>
-            <div class="h-3 bg-slate-700 rounded w-5/6"></div>
-            <div class="h-3 bg-slate-700 rounded w-4/6"></div>
-          </div>
-        </div>
-      </div>
+    <div id="skeleton" class="skeleton hidden">
+      <div class="sk"></div><div class="sk"></div><div class="sk"></div>
     </div>
 
-    <!-- Results -->
-    <div id="resultados" class="hidden space-y-6">
-
-      <!-- Slate summary -->
-      <div id="slate-summary" class="flex flex-wrap items-center gap-3 text-sm">
-        <span class="bg-blue-900/40 text-blue-300 px-3 py-1 rounded-full text-xs font-medium border border-blue-800/50"></span>
-        <span class="bg-emerald-900/40 text-emerald-300 px-3 py-1 rounded-full text-xs font-medium border border-emerald-800/50"></span>
-        <span class="bg-amber-900/40 text-amber-300 px-3 py-1 rounded-full text-xs font-medium border border-amber-800/50"></span>
-      </div>
-
-      <!-- Game cards -->
-      <div id="game-cards" class="grid gap-5 md:grid-cols-2"></div>
+    <div id="resultados" class="hidden">
+      <div id="slate-summary" class="chips"></div>
+      <div id="game-cards"></div>
     </div>
 
-    <!-- Empty state -->
-    <div id="empty-state" class="hidden text-center py-16">
-      <div class="text-5xl mb-4">📋</div>
-      <p class="text-slate-400 text-lg">Selecciona una fecha y presiona <strong class="text-white">Correr modelo</strong></p>
-      <p class="text-slate-500 text-sm mt-1">Se mostrarán aquí las predicciones del día</p>
+    <div id="empty-state" class="empty hidden">
+      <div class="big">📋</div>
+      <p>Selecciona una fecha y presiona <strong>Correr modelo</strong></p>
+      <p style="color:var(--ink-3); font-size:13px; margin-top:4px;">Aquí aparecerán las predicciones del día</p>
     </div>
 
-    <!-- Error -->
-    <div id="error" class="hidden bg-red-900/30 border border-red-800/50 rounded-xl p-4 text-red-300 text-sm"></div>
+    <div id="error" class="error hidden"></div>
 
   </main>
 
-  <footer class="border-t border-slate-800 mt-12 py-4 text-center text-xs text-slate-600">
-    MLB Modelo · Simulador Monte Carlo · Datos via MLB StatsAPI
-  </footer>
+  <footer>MLB Modelo · Simulador Monte Carlo · Datos vía MLB StatsAPI</footer>
 
 <script>
-const btnRun = document.getElementById('btn-run');
-const btnHoy = document.getElementById('btn-hoy');
-const btnText = document.getElementById('btn-text');
-const spinner = document.getElementById('spinner');
-const fechaInput = document.getElementById('fecha');
-const resultados = document.getElementById('resultados');
-const gameCards = document.getElementById('game-cards');
-const skeleton = document.getElementById('skeleton');
-const emptyState = document.getElementById('empty-state');
-const errorDiv = document.getElementById('error');
-const slateSummary = document.getElementById('slate-summary');
-const calibInfo = document.getElementById('calibracion-info');
-const statusInd = document.getElementById('status-indicator');
+const $ = id => document.getElementById(id);
+const btnRun = $('btn-run'), btnHoy = $('btn-hoy'), fechaInput = $('fecha');
+const resultados = $('resultados'), gameCards = $('game-cards'), skeleton = $('skeleton');
+const emptyState = $('empty-state'), errorDiv = $('error');
+const slateSummary = $('slate-summary'), calibInfo = $('calibracion-info'), statusInd = $('status-indicator');
 
 function fmtFecha(d) {
-  const mm = String(d.getMonth()+1).padStart(2,'0');
-  const dd = String(d.getDate()).padStart(2,'0');
-  const yyyy = d.getFullYear();
-  return `${yyyy}-${mm}-${dd}`;
+  const mm = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
-
-function toAPI(f) {
-  const [y,m,d] = f.split('-');
-  return `${m}/${d}/${y}`;
-}
-
-function toDisplay(f) {
-  const [y,m,d] = f.split('-');
-  return `${m}/${d}/${y}`;
-}
+function toAPI(f) { const [y,m,d] = f.split('-'); return `${m}/${d}/${y}`; }
 
 fechaInput.value = fmtFecha(new Date());
 emptyState.classList.remove('hidden');
-
-btnHoy.addEventListener('click', () => {
-  fechaInput.value = fmtFecha(new Date());
-});
-
+btnHoy.addEventListener('click', () => { fechaInput.value = fmtFecha(new Date()); });
 btnRun.addEventListener('click', correr);
+
+function setStatus(cls, txt) { statusInd.innerHTML = `<span class="dot ${cls}"></span> ${txt}`; }
 
 async function correr() {
   const fecha = fechaInput.value;
   if (!fecha) return;
-
-  btnRun.disabled = true;
-  spinner.classList.remove('hidden');
-  btnText.textContent = 'Ejecutando...';
-  resultados.classList.add('hidden');
-  errorDiv.classList.add('hidden');
-  emptyState.classList.add('hidden');
-  skeleton.classList.remove('hidden');
-
-  statusInd.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span> Simulando...`;
+  btnRun.disabled = true; btnRun.textContent = 'Ejecutando…';
+  resultados.classList.add('hidden'); errorDiv.classList.add('hidden');
+  emptyState.classList.add('hidden'); skeleton.classList.remove('hidden');
+  setStatus('run', 'Simulando…');
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 300000);
-
   try {
     const res = await fetch('/api/simular', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fecha: toAPI(fecha) }),
-      signal: controller.signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fecha: toAPI(fecha) }), signal: controller.signal,
     });
     clearTimeout(timeoutId);
     if (!res.ok) throw new Error(`Error ${res.status}: ${await res.text()}`);
-    const data = await res.json();
-    renderResultados(data, fecha);
+    renderResultados(await res.json());
   } catch (err) {
     clearTimeout(timeoutId);
-    errorDiv.textContent = '⚠ ' + (err.name === 'AbortError' ? 'La simulación tardó demasiado (>60s). Reintenta o revisa la conexión a las APIs.' : err.message);
+    errorDiv.textContent = '⚠ ' + (err.name === 'AbortError'
+      ? 'La simulación tardó demasiado (>5 min). Reintenta o revisa la conexión a las APIs.'
+      : err.message);
     errorDiv.classList.remove('hidden');
-    resultados.classList.add('hidden');
-    emptyState.classList.add('hidden');
-    statusInd.innerHTML = `<span class="w-2 h-2 rounded-full bg-red-500"></span> Error`;
+    setStatus('err', 'Error');
   } finally {
     skeleton.classList.add('hidden');
-    btnRun.disabled = false;
-    spinner.classList.add('hidden');
-    btnText.textContent = 'Correr modelo';
+    btnRun.disabled = false; btnRun.textContent = 'Correr modelo';
   }
 }
 
-function pct(p) { return (p * 100).toFixed(1) + '%'; }
-
+/* ---------- helpers de formato ---------- */
+const pct = p => (p * 100).toFixed(1) + '%';
 function momio(p) {
   if (p <= 0.01 || p >= 0.99) return '—';
   if (p >= 0.5) return String(-Math.round(100 * p / (1 - p)));
   return '+' + String(Math.round(100 * (1 - p) / p));
 }
+const fx = (v, n=2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(n);
 
-function barra(p, color = 'blue') {
-  const colors = {
-    blue: 'bg-blue-500',
-    emerald: 'bg-emerald-500',
-    amber: 'bg-amber-500',
-    violet: 'bg-violet-500',
-    rose: 'bg-rose-500',
-    cyan: 'bg-cyan-500',
-  };
-  return `
-    <div class="w-full bg-slate-700 rounded-full h-2 overflow-hidden mt-1">
-      <div class="${colors[color] || colors.blue} h-2 rounded-full transition-all duration-500" style="width:${pct(p)}"></div>
-    </div>`;
-}
+/* fila: etiqueta | prob | momio justo (fav = énfasis) */
+const filaPM = (lbl, p, fav) =>
+  `<tr class="${fav ? 'fav' : ''}"><td class="lbl">${lbl}</td><td>${pct(p)}</td><td class="odds">${momio(p)}</td></tr>`;
 
-function renderResultados(data, fecha) {
+/* ---------- render ---------- */
+function renderResultados(data) {
   resultados.classList.remove('hidden');
   gameCards.innerHTML = '';
 
-  const total = data.juegos.length;
-  const promedio = data.total_promedio_slate;
-  const valor = data.total_jugadas_valor;
+  slateSummary.innerHTML = `
+    <span class="chip">🎮 ${data.juegos.length} juegos modelables</span>
+    <span class="chip">📊 Total promedio del slate: ${data.total_promedio_slate ?? '—'}</span>
+    <span class="chip">💰 ${data.total_jugadas_valor} jugadas +EV</span>`;
 
-  const spans = slateSummary.querySelectorAll('span');
-  spans[0].textContent = `🎮 ${total} juegos modelables`;
-  spans[1].textContent = `📊 Total slate: ${promedio ?? '—'}`;
-  spans[2].textContent = `💰 ${valor} jugadas +EV`;
-
-  calibInfo.classList.remove('hidden');
   const c = data.calibracion;
-  calibInfo.querySelector('p').textContent =
-    `amortigua=${c.amortigua} · dispersion_k=${c.dispersion_k} · base=${c.base} · ${data.hay_odds ? 'con líneas de mercado' : 'sin ODDS_API_KEY'}`;
+  calibInfo.textContent = `amortigua=${c.amortigua} · dispersion_k=${c.dispersion_k} · base=${c.base} · ${data.hay_odds ? 'con líneas de mercado' : 'sin ODDS_API_KEY'}`;
+  calibInfo.classList.remove('hidden');
 
-  if (total === 0) {
-    gameCards.innerHTML = `
-      <div class="col-span-full text-center py-12 bg-slate-800/50 rounded-2xl border border-slate-700">
-        <div class="text-4xl mb-3">🔮</div>
-        <p class="text-slate-400">No hay juegos modelables para esta fecha</p>
-        <p class="text-slate-500 text-xs mt-1">(sin abridores anunciados o todos ya iniciados)</p>
-      </div>`;
+  if (!data.juegos.length) {
+    gameCards.innerHTML = `<div class="empty"><div class="big">🔮</div>
+      <p>No hay juegos modelables para esta fecha</p>
+      <p style="color:var(--ink-3);font-size:13px;">(sin abridores anunciados o todos ya iniciados)</p></div>`;
+    setStatus('ok', '0 juegos');
     return;
   }
 
-  for (const g of data.juegos) {
-    const card = document.createElement('div');
-    card.className = 'bg-slate-800 rounded-2xl border border-slate-700 shadow-lg overflow-hidden';
+  for (const g of data.juegos) gameCards.appendChild(cardJuego(g));
+  setStatus('ok', `${data.juegos.length} juegos`);
+}
 
-    let valorHTML = '';
-    if (g.jugadas_valor.length) {
-      valorHTML = `
-        <div class="bg-emerald-900/20 border-t border-emerald-800/30 px-5 py-3">
-          <p class="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">💰 Jugadas con valor</p>
-          ${g.jugadas_valor.map(j => `
-            <div class="flex items-center justify-between text-sm bg-emerald-900/20 rounded-lg px-3 py-1.5 mb-1 last:mb-0">
-              <span class="text-emerald-200">
-                ${j.mercado} <strong>${j.pick}</strong>${j.linea ? ' ' + j.linea : ''}
-                <span class="text-slate-400">· ${j.libro}</span>
-              </span>
-              <span class="font-mono text-emerald-300">${j.momio > 0 ? '+' : ''}${j.momio}</span>
-            </div>
-          `).join('')}
-        </div>`;
-    }
+function cardJuego(g) {
+  const card = document.createElement('article');
+  card.className = 'card';
+  const totalEsp = g.lam_v + g.lam_c;
+  const favCasa = g.p_casa >= g.p_visita;
 
-    card.innerHTML = `
-      <div class="p-5">
-        <!-- Teams -->
-        <div class="flex items-center justify-between mb-4">
-          <div class="flex-1 min-w-0">
-            <p class="text-xs text-slate-500 uppercase tracking-wide">Visita</p>
-            <p class="text-lg font-bold text-white truncate">${g.visita}</p>
-            <p class="text-xs text-slate-400 truncate">${g.abridor_v}</p>
-            <div class="flex gap-2 mt-1 text-xs text-slate-500">
-              <span>FIP ${g.fip_v ?? '—'}</span>
-              <span>${g.ip_v ?? '—'}IP</span>
-              <span>${g.mano_v ?? '?'}</span>
-            </div>
-          </div>
-          <div class="text-center px-3">
-            <p class="text-2xl font-extrabold text-white">@</p>
-            <p class="text-[10px] text-slate-500 mt-1">${g.park.toFixed(2)} PF</p>
-          </div>
-          <div class="flex-1 min-w-0 text-right">
-            <p class="text-xs text-slate-500 uppercase tracking-wide">Casa</p>
-            <p class="text-lg font-bold text-white truncate">${g.casa}</p>
-            <p class="text-xs text-slate-400 truncate">${g.abridor_c}</p>
-            <div class="flex justify-end gap-2 mt-1 text-xs text-slate-500">
-              <span>${g.mano_c ?? '?'}</span>
-              <span>${g.ip_c ?? '—'}IP</span>
-              <span>FIP ${g.fip_c ?? '—'}</span>
-            </div>
-          </div>
-        </div>
+  /* --- totales O/U: marca la línea más cercana al total esperado --- */
+  const lineasOU = Object.entries(g.overs);
+  let cercana = null, mejor = 99;
+  for (const [ln] of lineasOU) {
+    const d = Math.abs(parseFloat(ln) - totalEsp);
+    if (d < mejor) { mejor = d; cercana = ln; }
+  }
+  const filasOU = lineasOU.map(([ln, p]) => `
+    <tr class="${ln === cercana ? 'hl' : ''}">
+      <td class="lbl">${ln} ${ln === cercana ? `<span class="hl-note">≈ esperado</span>` : ''}</td>
+      <td>${pct(p)}</td><td class="odds">${momio(p)}</td>
+      <td>${pct(1 - p)}</td><td class="odds">${momio(1 - p)}</td>
+    </tr>`).join('');
 
-        <!-- Moneyline -->
-        <div class="mb-4">
-          <div class="flex justify-between text-xs text-slate-400 mb-1">
-            <span>${g.visita} ${pct(g.p_visita)} (${momio(g.p_visita)})</span>
-            <span class="font-medium text-white">Moneyline</span>
-            <span>${g.casa} ${pct(g.p_casa)} (${momio(g.p_casa)})</span>
-          </div>
-          ${barra(g.p_casa, 'blue')}
-        </div>
+  /* --- totales por equipo --- */
+  const ttLineas = Object.keys(g.tt_visita || {});
+  const filasTT = ttLineas.map(ln => `
+    <tr>
+      <td class="lbl">${ln}</td>
+      <td>${pct(g.tt_visita[ln])}</td><td>${pct(1 - g.tt_visita[ln])}</td>
+      <td>${pct(g.tt_casa[ln])}</td><td>${pct(1 - g.tt_casa[ln])}</td>
+    </tr>`).join('');
 
-        <!-- Run line -->
-        <div class="mb-4">
-          <div class="flex justify-between text-xs text-slate-400 mb-1">
-            <span>+1.5 ${pct(g.p_visita_rl)}</span>
-            <span class="font-medium text-white">Run Line</span>
-            <span>-1.5 ${pct(g.p_casa_rl)}</span>
-          </div>
-          ${barra(g.p_casa_rl, 'violet')}
-        </div>
+  /* --- marcadores más probables --- */
+  const scoresHTML = (g.marcadores || []).map(mc => `
+    <div class="score"><div class="sc">${mc.visita}–${mc.casa}</div><div class="pr">${pct(mc.p)}</div></div>`).join('');
 
-        <!-- Overs -->
-        <div class="mb-3">
-          <p class="text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide">Totales</p>
-          <div class="grid grid-cols-4 gap-1.5 text-center text-xs">
-            ${Object.entries(g.overs).map(([ln, p]) => `
-              <div class="bg-slate-700/50 rounded-lg py-1.5 ${p > 0.5 ? 'ring-1 ring-amber-600/40' : ''}">
-                <span class="text-slate-500">O${ln}</span>
-                <span class="block font-semibold text-amber-300">${pct(p)}</span>
-              </div>
-            `).join('')}
-          </div>
-        </div>
+  /* --- F5 --- */
+  const f = g.f5;
+  const favF5 = Math.max(f.p_casa, f.p_visita, f.p_empate);
+  const filasF5OU = Object.entries(f.overs).map(([ln, p]) => `
+    <tr><td class="lbl">${ln}</td>
+      <td>${pct(p)}</td><td class="odds">${momio(p)}</td>
+      <td>${pct(1 - p)}</td><td class="odds">${momio(1 - p)}</td></tr>`).join('');
 
-        <!-- F5 Section -->
-        <details class="group">
-          <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 transition-colors select-none
-                         flex items-center gap-1.5 py-1">
-            <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-            </svg>
-            Primeras 5 entradas (F5)
-          </summary>
-          <div class="mt-2 pt-3 border-t border-slate-700/50 space-y-2">
-            <div class="flex justify-between text-xs text-slate-400 mb-1">
-              <span>${g.visita} ${pct(g.f5.p_visita)}</span>
-              <span class="font-medium text-white">ML 3 vías</span>
-              <span>${g.casa} ${pct(g.f5.p_casa)}</span>
-            </div>
-            <div class="text-center text-xs text-slate-500 mb-1">Empate ${pct(g.f5.p_empate)}</div>
-            ${barra(g.f5.p_casa, 'cyan')}
-            <div class="flex justify-between text-xs text-slate-400">
-              <span>RL +0.5 ${pct(g.f5.rl_visita)}</span>
-              <span class="font-medium text-white">F5 Run Line</span>
-              <span>RL -0.5 ${pct(g.f5.rl_casa)}</span>
-            </div>
-            <div class="grid grid-cols-3 gap-1.5 text-center text-xs mt-2">
-              ${Object.entries(g.f5.overs).map(([ln, p]) => `
-                <div class="bg-slate-700/50 rounded-lg py-1.5 ${p > 0.5 ? 'ring-1 ring-amber-600/40' : ''}">
-                  <span class="text-slate-500">O${ln}</span>
-                  <span class="block font-semibold text-amber-300">${pct(p)}</span>
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        </details>
-
-        <!-- Bateo Section -->
-        <details class="group mt-1">
-          <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300 transition-colors select-none
-                         flex items-center gap-1.5 py-1">
-            <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-            </svg>
-            Pronóstico de Hits por Bateador
-          </summary>
-          <div class="mt-2 pt-3 border-t border-slate-700/50 space-y-3">
-            ${g.bateo ? ['away', 'home'].map(lado => {
-              const label = lado === 'away' ? g.visita : g.casa;
-              const color = lado === 'away' ? 'blue' : 'rose';
-              const bateadores = g.bateo[lado] || [];
-              if (!bateadores.length) return '';
-              return `
-                <div>
-                  <p class="text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wide">${label}</p>
-                  <div class="overflow-x-auto">
-                    <table class="w-full text-xs">
-                      <thead>
-                        <tr class="text-slate-500 border-b border-slate-700/50">
-                          <th class="text-left py-1 pr-2">#</th>
-                          <th class="text-left py-1 pr-2">Bateador</th>
-                          <th class="text-left py-1 pr-2">Pos</th>
-                          <th class="text-left py-1 pr-2">Mano</th>
-                          <th class="text-right py-1 pr-2">AVG</th>
-                          <th class="text-right py-1 pr-2">OPS</th>
-                          <th class="text-right py-1 pr-2">Últ 7d</th>
-                          <th class="text-right py-1 pr-2">BABIP</th>
-                          <th class="text-right py-1 pr-2 text-amber-300">Avg Esp</th>
-                          <th class="text-right py-1 pr-2 text-amber-300">Hits Esp</th>
-                          <th class="text-right py-1 text-emerald-400">≥1 Hit</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${bateadores.map(b => `
-                          <tr class="border-b border-slate-800/50 hover:bg-slate-700/20">
-                            <td class="py-1 pr-2 text-slate-500">${b.orden}</td>
-                            <td class="py-1 pr-2 text-white font-medium truncate max-w-[120px]">${b.nombre}</td>
-                            <td class="py-1 pr-2 text-slate-400">${b.posicion}</td>
-                            <td class="py-1 pr-2 text-slate-400">${b.bat_side || '?'}</td>
-                            <td class="py-1 pr-2 text-right text-slate-300">${b.avg_season || '—'}</td>
-                            <td class="py-1 pr-2 text-right text-slate-300">${b.ops_season || '—'}</td>
-                            <td class="py-1 pr-2 text-right text-slate-300">${b.avg_7d ? b.avg_7d.toFixed(3) : '—'}</td>
-                            <td class="py-1 pr-2 text-right text-slate-300">${b.babip || '—'}</td>
-                            <td class="py-1 pr-2 text-right font-semibold text-amber-300">${b.prediccion.avg_pred.toFixed(3)}</td>
-                            <td class="py-1 pr-2 text-right font-semibold text-amber-300">${b.prediccion.hits_esp.toFixed(1)}</td>
-                            <td class="py-1 pr-2 text-right font-semibold text-emerald-400">${pct(b.prediccion.p_hit_1 + b.prediccion.p_hit_2)}</td>
-                          </tr>
-                        `).join('')}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>`;
-            }).join('') : `
-              <p class="text-xs text-slate-500 italic py-2">Alineación no disponible aún (se anuncia ~1h antes del juego)</p>`}
-          </div>
-        </details>
-      </div>
-      ${valorHTML}
-    `;
-    gameCards.appendChild(card);
+  /* --- jugadas +EV --- */
+  let evHTML = '';
+  if (g.jugadas_valor && g.jugadas_valor.length) {
+    evHTML = `
+      <div class="ev">
+        <h4>💰 Jugadas con valor (+EV)</h4>
+        <table>
+          <thead><tr><th>Mercado</th><th style="text-align:left">Pick</th><th>Momio</th><th>Modelo</th><th>Mercado</th><th>EV</th><th>Casa</th></tr></thead>
+          <tbody>${g.jugadas_valor.map(j => `
+            <tr>
+              <td class="lbl">${j.mercado}${j.linea !== '' ? ' ' + j.linea : ''}</td>
+              <td style="text-align:left;font-weight:700">${j.pick}</td>
+              <td class="odds">${j.momio > 0 ? '+' : ''}${j.momio}</td>
+              <td>${pct(j.p_modelo)}</td><td>${pct(j.p_mercado)}</td>
+              <td style="color:var(--ev);font-weight:700">+${pct(j.ev)}</td>
+              <td class="odds">${j.libro}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
   }
 
-  statusInd.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> ${data.juegos.length} juegos`;
+  /* --- bateo --- */
+  const ladoBateo = (key, nombre) => {
+    const bs = (g.bateo && g.bateo[key]) || [];
+    if (!bs.length) return '';
+    return `
+      <div class="bateo-team">
+        <h5>${nombre}</h5>
+        <table>
+          <thead><tr>
+            <th>#</th><th style="text-align:left">Bateador</th><th>Pos</th><th>Mano</th>
+            <th>AVG</th><th>Últ 7d</th><th>AVG esp</th><th>Hits esp</th><th>≥1 hit</th>
+          </tr></thead>
+          <tbody>${bs.map(b => `
+            <tr>
+              <td class="lbl">${b.orden}</td>
+              <td class="name">${b.nombre}</td>
+              <td class="odds">${b.posicion}</td><td class="odds">${b.bat_side || '?'}</td>
+              <td>${b.avg_season || '—'}</td>
+              <td>${b.avg_7d ? b.avg_7d.toFixed(3) : '—'}</td>
+              <td style="font-weight:700">${b.prediccion.avg_pred.toFixed(3)}</td>
+              <td>${b.prediccion.hits_esp.toFixed(1)}</td>
+              <td style="font-weight:700">${pct(b.prediccion.p_hit_1 + b.prediccion.p_hit_2)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  };
+  const bateoInner = ladoBateo('away', g.visita) + ladoBateo('home', g.casa);
+  const bateoHTML = `
+    <details class="bateo">
+      <summary>Pronóstico de hits por bateador</summary>
+      ${bateoInner || '<p style="color:var(--ink-3);font-size:13px;margin-top:8px;">Alineación no disponible aún (se anuncia ~1h antes del juego)</p>'}
+    </details>`;
+
+  card.innerHTML = `
+    <div class="card-head">
+      <div class="team away">
+        <span class="tag">Visita</span>
+        <h3>${g.visita}</h3>
+        <p class="pitcher">${g.abridor_v} · ${g.mano_v ?? '?'}</p>
+        <p class="pitmeta">FIP ${fx(g.fip_v)}${g.fip_v_reciente ? ` (rec ${fx(g.fip_v_reciente)})` : ''} · ${fx(g.ip_v,1)} IP · bullpen ${fx(g.bullpen_v)}</p>
+      </div>
+      <div class="mid">
+        <div class="lam">${fx(g.lam_v)} — ${fx(g.lam_c)}</div>
+        <div class="lamlbl">Carreras esperadas</div>
+        <div class="park">Total ${fx(totalEsp)} · Park ${fx(g.park)}</div>
+      </div>
+      <div class="team home">
+        <span class="tag">Casa</span>
+        <h3>${g.casa}</h3>
+        <p class="pitcher">${g.abridor_c} · ${g.mano_c ?? '?'}</p>
+        <p class="pitmeta">FIP ${fx(g.fip_c)}${g.fip_c_reciente ? ` (rec ${fx(g.fip_c_reciente)})` : ''} · ${fx(g.ip_c,1)} IP · bullpen ${fx(g.bullpen_c)}</p>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <div class="cols">
+        <section class="block">
+          <h4>Moneyline</h4>
+          <table>
+            <thead><tr><th>Equipo</th><th>Prob</th><th>Momio justo</th></tr></thead>
+            <tbody>
+              ${filaPM(g.visita, g.p_visita, !favCasa)}
+              ${filaPM(g.casa, g.p_casa, favCasa)}
+            </tbody>
+          </table>
+        </section>
+
+        <section class="block">
+          <h4>Run line</h4>
+          <table>
+            <thead><tr><th>Equipo</th><th>Prob</th><th>Momio justo</th></tr></thead>
+            <tbody>
+              ${filaPM(`${g.visita} +1.5`, g.p_visita_rl, g.p_visita_rl >= 0.5)}
+              ${filaPM(`${g.casa} −1.5`, g.p_casa_rl, g.p_casa_rl >= 0.5)}
+            </tbody>
+          </table>
+        </section>
+      </div>
+
+      <div class="cols">
+        <section class="block">
+          <h4>Totales del juego <span class="note">(over / under)</span></h4>
+          <table>
+            <thead><tr><th>Línea</th><th>Over</th><th>Momio</th><th>Under</th><th>Momio</th></tr></thead>
+            <tbody>${filasOU}</tbody>
+          </table>
+        </section>
+
+        <div>
+          <section class="block">
+            <h4>Totales por equipo <span class="note">(over / under)</span></h4>
+            <table>
+              <thead><tr><th>Línea</th><th>${g.visita.split(' ').pop()} O</th><th>U</th><th>${g.casa.split(' ').pop()} O</th><th>U</th></tr></thead>
+              <tbody>${filasTT}</tbody>
+            </table>
+          </section>
+
+          <section class="block">
+            <h4>Marcadores más probables <span class="note">(visita–casa)</span></h4>
+            <div class="scores">${scoresHTML}</div>
+          </section>
+        </div>
+      </div>
+
+      <div class="f5wrap">
+        <div class="f5head">
+          <h4>Primeras 5 entradas (F5)</h4>
+          <span>carreras esp: ${fx(f.lam_v)} — ${fx(f.lam_c)} (total ${fx(f.lam_v + f.lam_c)})</span>
+        </div>
+        <div class="cols">
+          <section class="block">
+            <h4>ML 3 vías</h4>
+            <table>
+              <thead><tr><th>Resultado</th><th>Prob</th><th>Momio justo</th></tr></thead>
+              <tbody>
+                ${filaPM(g.visita, f.p_visita, f.p_visita === favF5)}
+                ${filaPM('Empate', f.p_empate, f.p_empate === favF5)}
+                ${filaPM(g.casa, f.p_casa, f.p_casa === favF5)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="block">
+            <h4>Run line F5 (±0.5)</h4>
+            <table>
+              <thead><tr><th>Equipo</th><th>Prob</th><th>Momio justo</th></tr></thead>
+              <tbody>
+                ${filaPM(`${g.visita} −0.5`, f.p_visita, false)}
+                ${filaPM(`${g.visita} +0.5`, f.rl_visita, f.rl_visita >= 0.5)}
+                ${filaPM(`${g.casa} −0.5`, f.p_casa, false)}
+                ${filaPM(`${g.casa} +0.5`, f.rl_casa, f.rl_casa >= 0.5)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="block">
+            <h4>Totales F5</h4>
+            <table>
+              <thead><tr><th>Línea</th><th>Over</th><th>Momio</th><th>Under</th><th>Momio</th></tr></thead>
+              <tbody>${filasF5OU}</tbody>
+            </table>
+          </section>
+        </div>
+      </div>
+
+      ${evHTML}
+      ${bateoHTML}
+    </div>`;
+  return card;
 }
 </script>
 

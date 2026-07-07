@@ -635,7 +635,12 @@ def simular_binom_neg(lam, n, k=DISPERSION_K):
     p = k / (k + lam)
     return _rng().negative_binomial(k, p, n)
 
-def simular(lam_v, lam_c):
+LINEAS_TT = [2.5, 3.5, 4.5, 5.5]   # totales por equipo (team totals)
+N_MARCADORES = 5                    # top de marcadores mas probables
+
+def simular_completo(lam_v, lam_c):
+    """Simulacion completa: ademas de overs/ML/RL devuelve totales por equipo
+    y los marcadores mas probables. Devuelve un dict."""
     c_v = simular_binom_neg(lam_v, N_SIMS)
     c_c = simular_binom_neg(lam_c, N_SIMS)
     tot = c_v + c_c
@@ -643,7 +648,31 @@ def simular(lam_v, lam_c):
     moneda = _rng().random(N_SIMS) < (lam_c / (lam_c + lam_v))
     gana_c = (c_c > c_v) | (empates & moneda)
     overs = {ln: (tot > ln).mean() for ln in LINEAS}
-    return overs, gana_c.mean(), ((c_c - c_v) >= 2).mean()
+
+    # totales por equipo: P(carreras del equipo > linea)
+    tt_v = {ln: (c_v > ln).mean() for ln in LINEAS_TT}
+    tt_c = {ln: (c_c > ln).mean() for ln in LINEAS_TT}
+
+    # marcadores mas probables (codifica el par casa-visita en un entero)
+    codigo = c_c * 1000 + c_v
+    vals, counts = np.unique(codigo, return_counts=True)
+    top = np.argsort(-counts)[:N_MARCADORES]
+    marcadores = [{"casa": int(vals[i] // 1000), "visita": int(vals[i] % 1000),
+                   "p": counts[i] / N_SIMS} for i in top]
+
+    return {
+        "overs": overs,
+        "p_casa": gana_c.mean(),
+        "p_casa_rl": ((c_c - c_v) >= 2).mean(),
+        "tt_visita": tt_v,
+        "tt_casa": tt_c,
+        "marcadores": marcadores,
+    }
+
+def simular(lam_v, lam_c):
+    """Interfaz clasica (overs, p_casa, p_casa_rl); wrapper de simular_completo."""
+    r = simular_completo(lam_v, lam_c)
+    return r["overs"], r["p_casa"], r["p_casa_rl"]
 
 def simular_f5(lam_v, lam_c):
     """#F5: tras 5 entradas el EMPATE si es un resultado real (no hay desempate).
