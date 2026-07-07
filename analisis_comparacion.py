@@ -85,6 +85,14 @@ for j in modelables:
 
     overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
 
+    # F5: se calcula aqui (con los factores de ESTE juego) y se guarda.
+    # Antes se recalculaba en un loop aparte reutilizando variables del
+    # ultimo juego -> numeros mezclados. Ahora todo vive por juego.
+    pitcheo_c_f5 = m.fip_f5(fip_c, ip_c, bp_c["fip"])
+    pitcheo_v_f5 = m.fip_f5(fip_v, ip_v, bp_v["fip"])
+    lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
+    lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+
     pred_total = lam_v + lam_c
     err_total = pred_total - real_total
     err_ml = p_casa - real_gana_casa
@@ -103,6 +111,7 @@ for j in modelables:
         "real_gana_casa": real_gana_casa,
         "err_ml": err_ml,
         "p_casa_rl": p_casa_rl,
+        "lam_v_f5": lam_v_f5, "lam_c_f5": lam_c_f5,
     })
 
     print(f"{visita:22s} {casa:22s} {lam_v:5.2f}  {lam_c:5.2f}  {pred_total:6.2f}     "
@@ -155,26 +164,11 @@ if resultados:
     print(f"    |error| <= 2: {dentro_2}/{n} ({dentro_2/n:.0%})")
     print(f"    |error| <= 3: {dentro_3}/{n} ({dentro_3/n:.0%})")
 
-    # Analisis F5
+    # Analisis F5 (lee las lambdas ya calculadas por juego en el loop principal)
+    # Nota: no tenemos el linescore real F5 desde el schedule, solo el final
     print(f"\n  {'F5':>72s}")
-    print(f"  {'VISITA':22s} {'CASA':22s} {'LAM_V_F5':8s} {'LAM_C_F5':8s} {'REAL V':6s} {'REAL C':6s}")
-    for j, r in zip(modelables, resultados):
-        visita, casa = r["visita"], r["casa"]
-        p_v, p_c = j["away_probable_pitcher"], j["home_probable_pitcher"]
-        pv = m.datos_pitcher(p_v)
-        pc = m.datos_pitcher(p_c)
-        if pv is None or pc is None or pv["fip"] is None or pc["fip"] is None:
-            continue
-        fip_v = m.fip_blend(pv)
-        fip_c = m.fip_blend(pc)
-        ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
-        bp_v = m.bullpen_stats(visita)
-        bp_c = m.bullpen_stats(casa)
-        pitcheo_c_f5 = m.fip_f5(fip_c, ip_c, bp_c["fip"])
-        pitcheo_v_f5 = m.fip_f5(fip_v, ip_v, bp_v["fip"])
-        lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-        lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
-        # Nota: no tenemos el linescore real F5 desde el schedule, solo el final
-        print(f"  {visita:22s} {casa:22s} {lam_v_f5:6.2f}  {lam_c_f5:6.2f}")
+    print(f"  {'VISITA':22s} {'CASA':22s} {'LAM_V_F5':8s} {'LAM_C_F5':8s}")
+    for r in resultados:
+        print(f"  {r['visita']:22s} {r['casa']:22s} {r['lam_v_f5']:6.2f}  {r['lam_c_f5']:6.2f}")
 
 print(f"\n=== FIN ANALISIS ===")

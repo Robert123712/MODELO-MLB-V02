@@ -55,7 +55,21 @@ LIGA_AVG = 0.248     # promedio de bateo de la liga
 LIGA_BABIP = 0.290   # BABIP promedio de la liga
 PA_POR_ORDEN = {1: 4.60, 2: 4.45, 3: 4.35, 4: 4.25, 5: 4.15, 6: 4.05, 7: 3.95, 8: 3.85, 9: 3.70} # PA dinamico
 
-RNG = np.random.default_rng(SEMILLA)  # #6: un solo generador, no uno por llamada
+import threading
+
+# #6+: RNG por hilo. app.py simula juegos en paralelo (ThreadPool) y el
+# Generator de numpy NO es thread-safe: compartir uno solo entre hilos puede
+# corromper el estado del bit-generator. Cada hilo recibe el suyo, derivado de
+# SEMILLA (si se fijo) para mantener reproducibilidad en backtests.
+_rng_local = threading.local()
+
+def _rng():
+    gen = getattr(_rng_local, "gen", None)
+    if gen is None:
+        seed = None if SEMILLA is None else SEMILLA + threading.get_ident()
+        gen = np.random.default_rng(seed)
+        _rng_local.gen = gen
+    return gen
 
 PARK = {
     "Colorado Rockies": 1.20, "Boston Red Sox": 1.06, "Cincinnati Reds": 1.05,
@@ -649,14 +663,14 @@ def simular_binom_neg(lam, n, k=DISPERSION_K):
     """ARREGLO 1: marcadores con binomial negativa (varianza > media).
     'k' configurable: el F5 usa una dispersion mas baja que el juego completo."""
     p = k / (k + lam)
-    return RNG.negative_binomial(k, p, n)
+    return _rng().negative_binomial(k, p, n)
 
 def simular(lam_v, lam_c):
     c_v = simular_binom_neg(lam_v, N_SIMS)
     c_c = simular_binom_neg(lam_c, N_SIMS)
     tot = c_v + c_c
     empates = c_c == c_v
-    moneda = RNG.random(N_SIMS) < (lam_c / (lam_c + lam_v))
+    moneda = _rng().random(N_SIMS) < (lam_c / (lam_c + lam_v))
     gana_c = (c_c > c_v) | (empates & moneda)
     overs = {ln: (tot > ln).mean() for ln in LINEAS}
     return overs, gana_c.mean(), ((c_c - c_v) >= 2).mean()
