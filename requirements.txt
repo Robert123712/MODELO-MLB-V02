@@ -1,4 +1,14 @@
 # Dependencias del modelo MLB
 # Instalar con:  pip install -r requirements.txt
+
+# --- Motor de simulacion y datos ---
 MLB-StatsAPI>=1.9.0
 numpy>=2.0.0
+
+# --- Web app (app.py) ---
+fastapi>=0.110.0
+uvicorn>=0.29.0
+pydantic>=2.0.0
+
+# --- Exportador a Excel (generar_excel.py) ---
+openpyxl>=3.1.0

@@ -24,7 +24,7 @@ except Exception:
 # ---------------- CONSTANTES ----------------
 LIGA_FIP = 4.15
 HFA = 1.04
-N_SIMS = 10_000
+N_SIMS = 50_000
 LINEAS = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
 LINEAS_F5 = [3.5, 4.5, 5.5]          # totales de las primeras 5 entradas
 TEMPORADA = 2026
@@ -35,12 +35,25 @@ AMORTIGUA = 0.6      # 0 = ignora el pitcheo; 1 = efecto completo. 0.6 suaviza e
 DISPERSION_K = 4.0   # dispersion de la binomial negativa. Mas bajo = mas varianza/caos
 DISPERSION_K_F5 = 2.4  # F5: menos entradas -> mas varianza relativa -> k mas bajo
 AJUSTE_BASE = 0.94   # calibra el nivel global de carreras para promediar ~8.5 el slate
-FRAC_F5 = 5.0 / 9.0  # las 5 entradas son 5/9 del juego (escala la ofensiva)
+# FRAC_F5 se calcula dinamicamente desde datos reales de la temporada
+# (carreras en innings 1-5 / carreras totales del juego)
+# El calculo se hace una vez y se cachea. Fallback si no hay datos: 0.62
+FRAC_F5 = None
+_cache_f5_frac = None
 
-# --- PARAMETROS NUEVOS (Sprint 5) ---
+# --- PARAMETROS NUEVOS (Sprint 5+) ---
 SEMILLA = None       # pon un entero para resultados reproducibles (backtests)
 VIDA_MEDIA = 20      # juegos: peso de reciencia de la ofensiva (half-life)
 SPLIT_TOPE = 0.15    # +/-15% maximo que el split L/R puede mover una ofensiva
+PESO_FIP_RECIENTE = 0.35  # peso del FIP de ultimas 3 salidas en el blend (35% reciente, 65% temporada)
+LIGA_K9 = 8.80       # ponches por 9 innings (promedio MLB 2025-26)
+LIGA_BB9 = 3.20      # bases por bolas por 9 innings
+FACTOR_KBB_SUAVE = 0.25  # que tan fuerte el K/BB factor modifica carreras (0=nulo, 0.5=fuerte)
+
+# --- PARAMETROS DE PREDICCION DE HITS ---
+LIGA_AVG = 0.248     # promedio de bateo de la liga
+LIGA_BABIP = 0.290   # BABIP promedio de la liga
+PA_POR_ORDEN = {1: 4.60, 2: 4.45, 3: 4.35, 4: 4.25, 5: 4.15, 6: 4.05, 7: 3.95, 8: 3.85, 9: 3.70} # PA dinamico
 
 RNG = np.random.default_rng(SEMILLA)  # #6: un solo generador, no uno por llamada
 
@@ -79,11 +92,14 @@ def prob_a_momio(p):
     return f"+{round(100 * (1 - p) / p)}"
 
 # --- caches (#6) ---
-cache_pitcher = {}   # nombre -> (fip, ip_esp, mano)
+cache_pitcher = {}   # nombre -> dict con fip, ip_esp, mano, k9, bb9, fip_reciente
 cache_equipo = {}    # nombre -> rs_ponderado
-cache_bullpen = {}   # nombre -> era_relevistas
+cache_bullpen = {}   # nombre -> dict {fip, era, k9, bb9}
 cache_split = {}     # (nombre, mano) -> multiplicador
 _cache_tid = {}      # nombre -> team id
+_cache_defensa = {}  # nombre -> factor defensivo
+_cache_calibracion = {}  # nombre -> factor calibracion
+_cache_team_schedule = {}  # (tid, hoy) -> schedule list (compartido entre funciones)
 
 def _team_id(nombre):
     if nombre not in _cache_tid:
@@ -91,39 +107,103 @@ def _team_id(nombre):
         _cache_tid[nombre] = eq[0]["id"] if eq else None
     return _cache_tid[nombre]
 
+def _team_schedule(tid, hoy):
+    """Cache compartido de schedule por equipo. Evita llamadas duplicadas entre funciones."""
+    key = (tid, hoy)
+    if key not in _cache_team_schedule:
+        try:
+            _cache_team_schedule[key] = statsapi.schedule(start_date=INICIO_TEMP, end_date=hoy, team=tid)
+        except Exception:
+            _cache_team_schedule[key] = []
+    return _cache_team_schedule[key]
+
 def datos_pitcher(nombre):
-    """Devuelve (fip, innings_esperados, mano 'L'/'R'). Cacheado y a prueba de fallos."""
+    """Devuelve dict con fip, ip_esp, mano, k9, bb9, fip_reciente. Cacheado."""
     if nombre in cache_pitcher:
         return cache_pitcher[nombre]
     try:
         res = statsapi.lookup_player(nombre)
         if not res:
-            return _guardar_pitcher(nombre, (None, None, None))
+            return _guardar_pitcher(nombre, None)
         pid = res[0]["id"]
 
         persona = statsapi.get("person", {"personId": pid})
         mano = persona["people"][0].get("pitchHand", {}).get("code")
 
-        data = statsapi.player_stat_data(pid, group="pitching", type="season")
-        if not data["stats"]:
-            return _guardar_pitcher(nombre, (None, None, mano))
-        s = data["stats"][0]["stats"]
-        ip_temp = ip_a_decimal(s.get("inningsPitched", 0))
-        fip = calcular_fip(s.get("homeRuns", 0), s.get("baseOnBalls", 0),
-                           s.get("hitByPitch", 0), s.get("strikeOuts", 0), ip_temp)
+        data = statsapi.get("person", {"personId": pid, "hydrate": "stats(group=[pitching],type=[season])"})
+        people = data.get("people", [])
+        if not people:
+            return _guardar_pitcher(nombre, {"fip": None, "ip_esp": None, "mano": mano, "k9": None, "bb9": None, "baa": None, "fip_reciente": None})
+        stats_arr = people[0].get("stats", [])
+        season_stats = None
+        for g in stats_arr:
+            if g.get("group", {}).get("displayName") == "pitching" and g.get("type", {}).get("displayName") == "season":
+                splits = g.get("splits", [])
+                if splits:
+                    season_stats = splits[0]["stat"]
+                    break
+        if not season_stats:
+            return _guardar_pitcher(nombre, {"fip": None, "ip_esp": None, "mano": mano, "k9": None, "bb9": None, "baa": None, "fip_reciente": None})
 
-        log = statsapi.player_stat_data(pid, group="pitching", type="gameLog")
-        ips = [ip_a_decimal(g["stats"].get("inningsPitched", 0)) for g in log["stats"][-3:]]
+        s = season_stats
+        ip_temp = ip_a_decimal(s.get("inningsPitched", 0))
+        k = s.get("strikeOuts", 0) or 0
+        bb = s.get("baseOnBalls", 0) or 0
+        hr = s.get("homeRuns", 0) or 0
+        hbp = s.get("hitByPitch", 0) or 0
+        baa_raw = s.get("avg", None)
+
+        fip = calcular_fip(hr, bb, hbp, k, ip_temp)
+        k9 = k * 9 / ip_temp if ip_temp > 0 else 0
+        bb9 = bb * 9 / ip_temp if ip_temp > 0 else 0
+        baa = float(baa_raw) if baa_raw else None
+
+        log_data = statsapi.get("person", {"personId": pid, "hydrate": "stats(group=[pitching],type=[gameLog])"})
+        log_people = log_data.get("people", [])
+        log_splits = []
+        if log_people:
+            for g in log_people[0].get("stats", []):
+                if g.get("group", {}).get("displayName") == "pitching" and g.get("type", {}).get("displayName") == "gameLog":
+                    log_splits = g.get("splits", [])
+                    break
+        ips = [ip_a_decimal(g["stat"].get("inningsPitched", 0)) for g in log_splits[-3:]]
         ip_esp = sum(ips) / len(ips) if ips else 5.0
         ip_esp = max(3.5, min(ip_esp, 7.0))
-        return _guardar_pitcher(nombre, (fip, ip_esp, mano))
+
+        # FIP reciente: ultimas 3 salidas con >= 1 IP
+        fips_recientes = []
+        for g in log_splits[-3:]:
+            gs = g["stat"]
+            ip_j = ip_a_decimal(gs.get("inningsPitched", 0))
+            if ip_j >= 1.0:
+                fj = calcular_fip(
+                    gs.get("homeRuns", 0) or 0, gs.get("baseOnBalls", 0) or 0,
+                    gs.get("hitByPitch", 0) or 0, gs.get("strikeOuts", 0) or 0, ip_j
+                )
+                if fj is not None:
+                    fips_recientes.append(fj)
+        fip_reciente = sum(fips_recientes) / len(fips_recientes) if fips_recientes else None
+
+        return _guardar_pitcher(nombre, {
+            "fip": fip, "ip_esp": ip_esp, "mano": mano,
+            "k9": k9, "bb9": bb9, "baa": baa, "fip_reciente": fip_reciente,
+        })
     except Exception as e:
         print(f"⚠ Error con pitcher {nombre}: {e}")
-        return _guardar_pitcher(nombre, (None, None, None))
+        return _guardar_pitcher(nombre, None)
 
-def _guardar_pitcher(nombre, valor_t):
-    cache_pitcher[nombre] = valor_t
-    return valor_t
+def _guardar_pitcher(nombre, valor):
+    cache_pitcher[nombre] = valor
+    return valor
+
+def fip_blend(p):
+    """Combina FIP de temporada con FIP reciente.
+    Si no hay reciente (sample pequeno), usa solo temporada."""
+    if p is None or p["fip"] is None:
+        return LIGA_FIP
+    if p["fip_reciente"] is None:
+        return p["fip"]
+    return p["fip"] * (1 - PESO_FIP_RECIENTE) + p["fip_reciente"] * PESO_FIP_RECIENTE
 
 def carreras_por_juego(nombre_equipo, hoy):
     """#3: carreras/juego PONDERADAS por reciencia (half-life = VIDA_MEDIA juegos)."""
@@ -132,9 +212,9 @@ def carreras_por_juego(nombre_equipo, hoy):
     tid = _team_id(nombre_equipo)
     if tid is None:
         return 4.4
-    try:
-        temporada = statsapi.schedule(start_date=INICIO_TEMP, end_date=hoy, team=tid)
-    except Exception:
+    temporada = _team_schedule(tid, hoy)
+    if not temporada:
+        cache_equipo[nombre_equipo] = 4.4
         return 4.4
     anotadas = [j["home_score"] if j["home_id"] == tid else j["away_score"]
                 for j in temporada if j["status"] == "Final"]
@@ -148,14 +228,14 @@ def carreras_por_juego(nombre_equipo, hoy):
     cache_equipo[nombre_equipo] = rg
     return rg
 
-def bullpen_era(nombre_equipo):
-    """#4: ERA real de los relevistas del equipo (split 'rp'). Automatico + cache."""
+def bullpen_stats(nombre_equipo):
+    """#4+: Stats de relevistas: fip, era, k9, bb9 (split 'rp'). Cacheado."""
     if nombre_equipo in BULLPEN_OVERRIDE:
-        return BULLPEN_OVERRIDE[nombre_equipo]
+        return {"fip": BULLPEN_OVERRIDE[nombre_equipo], "era": BULLPEN_OVERRIDE[nombre_equipo], "k9": LIGA_K9, "bb9": LIGA_BB9}
     if nombre_equipo in cache_bullpen:
         return cache_bullpen[nombre_equipo]
     tid = _team_id(nombre_equipo)
-    era = 4.15
+    bp = {"fip": LIGA_FIP, "era": LIGA_FIP, "k9": LIGA_K9, "bb9": LIGA_BB9}
     if tid is not None:
         try:
             d = statsapi.get("team_stats", {"teamId": tid, "stats": "statSplits",
@@ -163,11 +243,17 @@ def bullpen_era(nombre_equipo):
                                             "sitCodes": "rp", "gameType": "R"})
             sp = d["stats"][0]["splits"]
             if sp:
-                era = float(sp[0]["stat"].get("era", 4.15))
+                st = sp[0]["stat"]
+                bp["fip"] = float(st.get("fip", LIGA_FIP) or LIGA_FIP)
+                bp["era"] = float(st.get("era", LIGA_FIP) or LIGA_FIP)
+                ip_bp = ip_a_decimal(st.get("inningsPitched", 0))
+                if ip_bp > 0:
+                    bp["k9"] = (st.get("strikeOuts", 0) or 0) * 9 / ip_bp
+                    bp["bb9"] = (st.get("baseOnBalls", 0) or 0) * 9 / ip_bp
         except Exception:
             pass
-    cache_bullpen[nombre_equipo] = era
-    return era
+    cache_bullpen[nombre_equipo] = bp
+    return bp
 
 def split_ofensivo(nombre_equipo, mano):
     """#3: multiplicador de la ofensiva segun la mano del abridor rival (OPS vs LHP/RHP)."""
@@ -199,6 +285,264 @@ def split_ofensivo(nombre_equipo, mano):
     cache_split[clave] = mult
     return mult
 
+# ---------------- BATEADORES: DATOS Y PREDICCION DE HITS ----------------
+
+_cache_bateador = {}      # person_id -> dict con stats de bateo
+_cache_lineup = {}         # game_id -> {away: [...], home: [...]}
+_cache_reciente = {}       # person_id -> {avg_7: ..., avg_14: ...}
+
+def _person_id(nombre):
+    res = statsapi.lookup_player(nombre)
+    return res[0]["id"] if res else None
+
+def datos_bateador(nombre, pid=None):
+    """Obtiene stats de bateo de un jugador por nombre. Cacheado por person_id."""
+    if pid is None:
+        pid = _person_id(nombre)
+    if pid is None:
+        return None
+    if pid in _cache_bateador:
+        return _cache_bateador[pid]
+    try:
+        data = statsapi.get("person", {"personId": pid, "hydrate": "stats(group=[hitting],type=[season])"})
+        people = data.get("people", [])
+        if not people:
+            _cache_bateador[pid] = None
+            return None
+        p = people[0]
+        bat_side = p.get("batSide", {}).get("code")
+        stats_arr = p.get("stats", [])
+        season_stats = None
+        for g in stats_arr:
+            if g.get("group", {}).get("displayName") == "hitting" and g.get("type", {}).get("displayName") == "season":
+                splits = g.get("splits", [])
+                if splits:
+                    season_stats = splits[0]["stat"]
+                    break
+        if not season_stats:
+            _cache_bateador[pid] = None
+            return None
+        s = season_stats
+        ab = int(s.get("atBats", 0) or 0)
+        avg = float(s["avg"]) if s.get("avg") else None
+        obp = float(s["obp"]) if s.get("obp") else None
+        slg = float(s["slg"]) if s.get("slg") else None
+        ops = float(s["ops"]) if s.get("ops") else None
+        babip = float(s["babip"]) if s.get("babip") else None
+        k = int(s.get("strikeOuts", 0) or 0)
+        bb = int(s.get("baseOnBalls", 0) or 0)
+        h = int(s.get("hits", 0) or 0)
+        hr = int(s.get("homeRuns", 0) or 0)
+        k_pct = k / ab if ab > 0 else None
+        bb_pct = bb / ab if ab > 0 else None
+        batter = {
+            "pid": pid, "nombre": nombre, "bat_side": bat_side,
+            "avg": avg, "obp": obp, "slg": slg, "ops": ops,
+            "babip": babip, "k_pct": k_pct, "bb_pct": bb_pct,
+            "h": h, "hr": hr, "ab": ab,
+        }
+        # Stats recientes (ultimos 7 y 14 juegos via gameLog)
+        try:
+            log_data = statsapi.get("person", {"personId": pid, "hydrate": "stats(group=[hitting],type=[gameLog])"})
+            log_people = log_data.get("people", [])
+            log_splits = []
+            if log_people:
+                for g in log_people[0].get("stats", []):
+                    if g.get("group", {}).get("displayName") == "hitting" and g.get("type", {}).get("displayName") == "gameLog":
+                        log_splits = g.get("splits", [])
+                        break
+            if log_splits:
+                for dias, campo in [(7, "avg_7d"), (14, "avg_14d")]:
+                    recientes = [gs["stat"] for gs in log_splits[-dias:] if int(gs["stat"].get("atBats", 0) or 0) > 0]
+                    if recientes:
+                        rh = sum(int(g.get("hits", 0) or 0) for g in recientes)
+                        rab = sum(int(g.get("atBats", 0) or 0) for g in recientes)
+                        batter[campo] = rh / rab if rab > 0 else None
+                    else:
+                        batter[campo] = None
+            else:
+                batter["avg_7d"] = None
+                batter["avg_14d"] = None
+        except Exception:
+            batter["avg_7d"] = None
+            batter["avg_14d"] = None
+        _cache_bateador[pid] = batter
+        return batter
+    except Exception as e:
+        print(f"⚠ Error con bateador {nombre}: {e}")
+        _cache_bateador[pid] = None
+        return None
+
+def alineacion_juego(game_id, team_name):
+    """Extrae la alineacion probable de un juego desde el boxscore.
+    Devuelve lista de dicts con {nombre, orden, posicion, bat_side} o None si no disponible.
+    Los stats de temporada (avg, ops, obp, slg) vienen del seasonStats del boxscore."""
+    if game_id in _cache_lineup:
+        return _cache_lineup[game_id]
+    resultado = {"away": [], "home": []}
+    try:
+        # Usar el game endpoint para obtener gameData.players (con batSide)
+        game = statsapi.get("game", {"gamePk": game_id,
+            "fields": "gameData,players,batSide,code,description,boxscoreName,"
+                      "liveData,boxscore,teams,players,battingOrder,person,fullName,"
+                      "allPositions,abbreviation,position,seasonStats,batting,avg,obp,slg,ops"})
+        gdata = game.get("gameData", {})
+        all_players = gdata.get("players", {})
+        bx = game.get("liveData", {}).get("boxscore", {})
+        teams = bx.get("teams", {})
+        for lado in ("away", "home"):
+            lado_data = teams.get(lado, {})
+            jugadores = lado_data.get("players", {})
+            ordenados = []
+            for pid_str, pdata in jugadores.items():
+                bo = pdata.get("battingOrder")
+                if bo is not None:
+                    nombre = pdata.get("person", {}).get("fullName", "")
+                    pos = pdata.get("position", {}).get("abbreviation", "")
+                    ss = pdata.get("seasonStats", {}).get("batting", {})
+                    # batSide desde gameData.players
+                    pid_key = "ID" + str(int(pid_str.replace("ID", "")))
+                    full_pdata = all_players.get(pid_key, {})
+                    bs = full_pdata.get("batSide", {}).get("code")
+                    ordenados.append({
+                        "pid": int(pid_str.replace("ID", "")),
+                        "nombre": nombre,
+                        "orden": int(str(bo)[0]) if str(bo) else 99,
+                        "posicion": pos,
+                        "bat_side": bs,
+                        "avg_season": ss.get("avg"),
+                        "obp_season": ss.get("obp"),
+                        "slg_season": ss.get("slg"),
+                        "ops_season": ss.get("ops"),
+                    })
+            # Tomar solo el primer bateador por orden (el titular)
+            seen_orden = set()
+            unicos = []
+            for b in sorted(ordenados, key=lambda x: x["orden"]):
+                if b["orden"] not in seen_orden:
+                    seen_orden.add(b["orden"])
+                    unicos.append(b)
+            resultado[lado] = unicos[:9]
+    except Exception as e:
+        print(f"⚠ No se pudo obtener alineacion para juego {game_id}: {e}")
+        resultado = None
+    _cache_lineup[game_id] = resultado
+    return resultado
+
+def predecir_hits(avg_season, pitcher_baa, split_team, park_factor, avg_7d=None, babip=None, orden=None):
+    """Calcula prediccion de hits para un bateador vs un pitcher especifico.
+    Devuelve dict con avg_esperado, hits_esperados, p_hit_0, p_hit_1, p_hit_2."""
+    if avg_season is None:
+        return None
+    avg_season = float(avg_season)
+    # AVG ajustado por split de equipo vs la mano del pitcher
+    avg_split = avg_season * split_team if split_team else avg_season
+    avg_split = max(0.100, min(avg_split, 0.400))
+    # Pitcher: su BAA o liga
+    baa = pitcher_baa if pitcher_baa is not None else LIGA_AVG
+    factor_pitcher = LIGA_AVG / baa if baa > 0.050 else 1.0
+    factor_pitcher = max(0.70, min(factor_pitcher, 1.30))
+    # Blend: season split + reciente + pitcher + park + liga
+    pesos = [0.35, 0.20, 0.20, 0.15, 0.10]
+    componentes = [
+        avg_split,
+        avg_7d if avg_7d else avg_season,
+        LIGA_AVG * factor_pitcher,
+        LIGA_AVG * (park_factor + 0.5) / 1.5,
+        LIGA_AVG,
+    ]
+    total_peso = sum(pesos)
+    avg_pred = sum(c * p for c, p in zip(componentes, pesos)) / total_peso
+    avg_pred = max(0.080, min(avg_pred, 0.400))
+    # Ajuste por BABIP: si BABIP esta muy alto/bajo, regresion hacia la media
+    if babip is not None:
+        desvio = float(babip) - LIGA_BABIP
+        avg_pred -= desvio * 0.15  # regresion parcial
+        avg_pred = max(0.080, min(avg_pred, 0.400))
+    PA = PA_POR_ORDEN.get(orden, 4.2) if orden else 4.2
+    p_hit_0 = (1 - avg_pred) ** PA
+    p_hit_1 = PA * avg_pred * (1 - avg_pred) ** (PA - 1)
+    p_hit_2 = 1 - p_hit_0 - p_hit_1
+    return {
+        "avg_pred": round(avg_pred, 3),
+        "hits_esp": round(PA * avg_pred, 2),
+        "p_hit_0": round(p_hit_0, 3),
+        "p_hit_1": round(p_hit_1, 3),
+        "p_hit_2": round(p_hit_2, 3),
+    }
+
+# --- cache y calculo de F5 desde datos reales ---
+_cache_linescore = {}  # game_id -> linescore
+
+def _frac_f5_de_juego(linescore):
+    inn = linescore.get("innings", [])
+    if len(inn) < 5:
+        return None
+    f5 = sum(
+        (inn[i].get("home", {}).get("runs", 0) or 0)
+        + (inn[i].get("away", {}).get("runs", 0) or 0)
+        for i in range(5)
+    )
+    total = sum(
+        (i.get("home", {}).get("runs", 0) or 0)
+        + (i.get("away", {}).get("runs", 0) or 0)
+        for i in inn
+    )
+    return f5 / total if total > 0 else None
+
+
+F5_CACHE_FILE = "f5_frac_cache.json"
+
+def f5_frac_liga(hoy=None):
+    """Fraccion REAL de carreras en las primeras 5 entradas, calculada
+    desde los juegos terminados de la temporada. Cacheada a disco."""
+    global _cache_f5_frac
+    if _cache_f5_frac is not None:
+        return _cache_f5_frac
+    import json
+    if os.path.exists(F5_CACHE_FILE):
+        try:
+            with open(F5_CACHE_FILE) as _f:
+                _cache_f5_frac = json.load(_f)
+            return _cache_f5_frac
+        except Exception:
+            pass
+
+    hoy = hoy or date.today().strftime("%m/%d/%Y")
+    try:
+        todos = statsapi.schedule(start_date=INICIO_TEMP, end_date=hoy)
+    except Exception:
+        _cache_f5_frac = 0.62
+        return 0.62
+
+    finales = [j for j in todos if j["status"] == "Final"]
+    suma_frac = 0.0
+    count = 0
+
+    for j in finales:
+        if count >= 40:
+            break
+        gid = j["game_id"]
+        if gid not in _cache_linescore:
+            try:
+                _cache_linescore[gid] = statsapi.get("game_linescore", {"gamePk": gid})
+            except Exception:
+                continue
+        frac = _frac_f5_de_juego(_cache_linescore[gid])
+        if frac is not None:
+            suma_frac += frac
+            count += 1
+
+    _cache_f5_frac = (suma_frac / count) if count > 0 else 0.62
+    _cache_f5_frac = max(0.50, min(_cache_f5_frac, 0.75))
+    try:
+        with open(F5_CACHE_FILE, "w") as _f:
+            json.dump(_cache_f5_frac, _f)
+    except Exception:
+        pass
+    return _cache_f5_frac
+
+
 def fip_combinado(fip_abridor, ip_abridor, era_bullpen):
     return (fip_abridor * ip_abridor + era_bullpen * (9 - ip_abridor)) / 9
 
@@ -213,6 +557,93 @@ def multiplicador_pitcheo(fip_comb):
     """ARREGLO 2: amortigua el efecto del pitcheo hacia 1.0 en vez de lineal puro."""
     crudo = fip_comb / LIGA_FIP
     return 1 + AMORTIGUA * (crudo - 1)
+
+def factor_kbb_comb(p_abridor, bp_stats):
+    """Factor K/BB combinado del staff (abridor + bullpen).
+    < 1 = suprimen carreras (alto K, bajo BB). > 1 = inflan carreras."""
+    if p_abridor is None:
+        return 1.0
+    ip_a = p_abridor["ip_esp"] or 5.0
+    ip_b = 9.0 - ip_a
+    k9_a = p_abridor["k9"] or LIGA_K9
+    bb9_a = p_abridor["bb9"] or LIGA_BB9
+
+    k9_comb = (k9_a * ip_a + bp_stats["k9"] * ip_b) / 9.0
+    bb9_comb = (bb9_a * ip_a + bp_stats["bb9"] * ip_b) / 9.0
+
+    k_factor = LIGA_K9 / k9_comb if k9_comb > 0 else 1.0
+    bb_factor = bb9_comb / LIGA_BB9 if LIGA_BB9 > 0 else 1.0
+    return 1 + FACTOR_KBB_SUAVE * ((k_factor * bb_factor) - 1)
+
+def factor_defensivo(nombre_equipo):
+    """Multiplicador por defensa del equipo. Basado en errores/juego.
+    < 1 = buena defensa (menos carreras). > 1 = mala defensa (mas carreras)."""
+    if nombre_equipo in _cache_defensa:
+        return _cache_defensa[nombre_equipo]
+    tid = _team_id(nombre_equipo)
+    if tid is None:
+        _cache_defensa[nombre_equipo] = 1.0
+        return 1.0
+    try:
+        d = statsapi.get("team_stats", {"teamId": tid, "stats": "season",
+                                        "group": "fielding", "season": TEMPORADA, "gameType": "R"})
+        sp = d["stats"][0]["splits"]
+        if not sp:
+            _cache_defensa[nombre_equipo] = 1.0
+            return 1.0
+        st = sp[0]["stat"]
+        errors = st.get("errors", 0) or 0
+        games = st.get("games", 0) or 1
+        ejuego = errors / max(games, 1)
+        # Liga promedia ~0.55 errores/juego. Desviacion de ~0.15 -> ~2% de efecto
+        desvio = ejuego - 0.55
+        factor = 1 + desvio * 0.12
+        factor = max(0.96, min(factor, 1.04))
+        _cache_defensa[nombre_equipo] = factor
+        return factor
+    except Exception:
+        _cache_defensa[nombre_equipo] = 1.0
+        return 1.0
+
+_cache_calibracion = {}
+
+def factor_calibracion(nombre_equipo, hoy):
+    """Factor correctivo por equipo. Calcula sesgo historico entre carreras reales
+    y las esperadas por el modelo (rg * ajustes). Si rg_model > rg_real, factor < 1."""
+    if nombre_equipo in _cache_calibracion:
+        return _cache_calibracion[nombre_equipo]
+    tid = _team_id(nombre_equipo)
+    if tid is None:
+        _cache_calibracion[nombre_equipo] = 1.0
+        return 1.0
+    temporada = _team_schedule(tid, hoy)
+    if not temporada:
+        _cache_calibracion[nombre_equipo] = 1.0
+        return 1.0
+
+    finales = [j for j in temporada if j["status"] == "Final"]
+    if len(finales) < 15:
+        _cache_calibracion[nombre_equipo] = 1.0
+        return 1.0
+
+    real_runs = []
+    for j in finales:
+        r = j["home_score"] if j["home_id"] == tid else j["away_score"]
+        real_runs.append(r or 0)
+
+    actual_avg = np.mean(real_runs)
+    # rg_ponderado ya nos da el promedio real. El sesgo que buscamos es si el equipo
+    # consistentemente rinde diferente a lo que su historia reciente sugiere.
+    # Usamos VIDA_MEDIA para el mismo ponderado que carreras_por_juego
+    n = len(real_runs)
+    pesos = [0.5 ** ((n - 1 - i) / VIDA_MEDIA) for i in range(n)]
+    actual_weighted = sum(p * r for p, r in zip(pesos, real_runs)) / sum(pesos) if sum(pesos) > 0 else actual_avg
+
+    sesgo = actual_weighted / max(actual_avg, 0.1)
+    factor = 1 + 0.2 * (sesgo - 1)  # suavizado al 20%
+    factor = max(0.94, min(factor, 1.06))
+    _cache_calibracion[nombre_equipo] = factor
+    return factor
 
 def simular_binom_neg(lam, n, k=DISPERSION_K):
     """ARREGLO 1: marcadores con binomial negativa (varianza > media).
@@ -239,6 +670,66 @@ def simular_f5(lam_v, lam_c):
     overs = {ln: (tot > ln).mean() for ln in LINEAS_F5}
     return overs, (c_c > c_v).mean(), (c_v > c_c).mean(), (c_c == c_v).mean()
 
+def predecir_hits_juego(visita, casa, game_id, pitcher_v, pitcher_c, park_factor, split_v, split_c):
+    """Obtiene predicciones de hits para todos los bateadores en la alineacion de un juego.
+    Usa los stats del boxscore directamente (sin llamadas extra por bateador) para ser rapido.
+    Opcionalmente enriquece con stats detallados si ya estan cacheados."""
+    lineup = alineacion_juego(game_id, None)
+    if lineup is None or (not lineup.get("away") and not lineup.get("home")):
+        return None
+        
+    from concurrent.futures import ThreadPoolExecutor
+    bateadores_a_buscar = []
+    for lado in ("away", "home"):
+        for b in lineup.get(lado, []):
+            bateadores_a_buscar.append((b["nombre"], b.get("pid")))
+            
+    if bateadores_a_buscar:
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            list(pool.map(lambda x: datos_bateador(x[0], x[1]), bateadores_a_buscar))
+
+    resultado = {"away": [], "home": []}
+    for lado, abridor, split_team in [("away", pitcher_c, split_v), ("home", pitcher_v, split_c)]:
+        if abridor is None:
+            continue
+        baa = abridor.get("baa")
+        for b in lineup.get(lado, []):
+            avg_season_obj = b.get("avg_season")
+            if avg_season_obj is None:
+                continue
+            avg_s = float(avg_season_obj) if avg_season_obj else None
+            if avg_s is None:
+                continue
+            bat_side = b.get("bat_side")
+            # Intentar enriquecer con stats detallados del cache
+            avg_7d = None
+            babip = None
+            pid = b.get("pid")
+            if pid and pid in _cache_bateador:
+                bdata = _cache_bateador[pid]
+                if bdata:
+                    avg_7d = bdata.get("avg_7d")
+                    babip = bdata.get("babip")
+                    if not bat_side:
+                        bat_side = bdata.get("bat_side")
+            pred = predecir_hits(avg_s, baa, split_team, park_factor, avg_7d, babip, b.get("orden"))
+            if pred is None:
+                continue
+            resultado[lado].append({
+                "nombre": b["nombre"],
+                "orden": b.get("orden"),
+                "posicion": b.get("posicion"),
+                "avg_season": avg_s,
+                "obp_season": b.get("obp_season"),
+                "slg_season": b.get("slg_season"),
+                "ops_season": b.get("ops_season"),
+                "avg_7d": avg_7d,
+                "babip": babip,
+                "bat_side": bat_side,
+                "prediccion": pred,
+            })
+    return resultado
+
 # ---------------- PROCESO PRINCIPAL ----------------
 
 def correr(fecha=None):
@@ -249,9 +740,11 @@ def correr(fecha=None):
                   and j["away_probable_pitcher"] and j["home_probable_pitcher"]]
 
     odds_slate = valor.obtener_odds()  # #2: {} si no hay ODDS_API_KEY
+    _frac_f5 = f5_frac_liga(hoy)       # fraccion real de carreras en primeras 5 entradas
 
     print(f"=== MODELO DIARIO v3 — {hoy} ===")
     print(f"Calibracion: amortigua={AMORTIGUA} | dispersion_k={DISPERSION_K} | base={AJUSTE_BASE}")
+    print(f"F5 fraccion: {_frac_f5:.3f} (vs 5/9={5/9:.3f})")
     print(f"Modelables: {len(modelables)} | Lineas de mercado: {'si' if odds_slate else 'no (sin ODDS_API_KEY)'}\n")
 
     filas_csv = []
@@ -264,59 +757,71 @@ def correr(fecha=None):
         print(f"--- {visita} @ {casa} ---")
         print(f"Abridores: {p_v} vs {p_c}")
 
-        fip_v, ip_v, mano_v = datos_pitcher(p_v)
-        fip_c, ip_c, mano_c = datos_pitcher(p_c)
-        if fip_v is None or fip_c is None:
+        pv = datos_pitcher(p_v)
+        pc = datos_pitcher(p_c)
+        if pv is None or pc is None or pv["fip"] is None or pc["fip"] is None:
             print("⚠ Sin datos — juego omitido\n")
             continue
+
+        fip_v = fip_blend(pv)
+        fip_c = fip_blend(pc)
+        ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
+        mano_v, mano_c = pv["mano"], pc["mano"]
 
         rg_v = carreras_por_juego(visita, hoy)
         rg_c = carreras_por_juego(casa, hoy)
         park = PARK.get(casa, 1.00)
 
-        # #3: la ofensiva se ajusta a la mano del abridor que enfrenta
         split_v = split_ofensivo(visita, mano_c)
         split_c = split_ofensivo(casa, mano_v)
 
-        # #4: bullpen real, ya no fijo en 4.15
-        pitcheo_c = fip_combinado(fip_c, ip_c, bullpen_era(casa))
-        pitcheo_v = fip_combinado(fip_v, ip_v, bullpen_era(visita))
+        bp_v = bullpen_stats(visita)
+        bp_c = bullpen_stats(casa)
 
-        lam_v = rg_v * split_v * multiplicador_pitcheo(pitcheo_c) * park * AJUSTE_BASE
-        lam_c = rg_c * split_c * multiplicador_pitcheo(pitcheo_v) * park * AJUSTE_BASE * HFA
+        # Factores nuevos
+        kbb_c = factor_kbb_comb(pc, bp_c)   # K/BB del pitcheo de CASA -> afecta a VISITA
+        kbb_v = factor_kbb_comb(pv, bp_v)   # K/BB del pitcheo de VISITA -> afecta a CASA
+        def_v = factor_defensivo(visita)     # defensa de VISITA -> afecta a CASA
+        def_c = factor_defensivo(casa)       # defensa de CASA -> afecta a VISITA
+        cal_v = factor_calibracion(visita, hoy)
+        cal_c = factor_calibracion(casa, hoy)
+
+        pitcheo_c = fip_combinado(fip_c, ip_c, bp_c["fip"])
+        pitcheo_v = fip_combinado(fip_v, ip_v, bp_v["fip"])
+
+        lam_v = rg_v * split_v * multiplicador_pitcheo(pitcheo_c) * kbb_c * def_c * park * AJUSTE_BASE * cal_v
+        lam_c = rg_c * split_c * multiplicador_pitcheo(pitcheo_v) * kbb_v * def_v * park * AJUSTE_BASE * HFA * cal_c
 
         overs, p_casa, p_casa_rl = simular(lam_v, lam_c)
         totales_slate.append(lam_v + lam_c)
 
-        # #F5: primeras 5 entradas — domina el abridor, el bullpen casi no entra.
-        # Reusa splits L/R y bullpen dinamico; solo cambia el FIP (a 5 IP) y la escala 5/9.
-        pitcheo_c_f5 = fip_f5(fip_c, ip_c, bullpen_era(casa))
-        pitcheo_v_f5 = fip_f5(fip_v, ip_v, bullpen_era(visita))
-        lam_v_f5 = rg_v * split_v * FRAC_F5 * multiplicador_pitcheo(pitcheo_c_f5) * park * AJUSTE_BASE
-        lam_c_f5 = rg_c * split_c * FRAC_F5 * multiplicador_pitcheo(pitcheo_v_f5) * park * AJUSTE_BASE * HFA
+        pitcheo_c_f5 = fip_f5(fip_c, ip_c, bp_c["fip"])
+        pitcheo_v_f5 = fip_f5(fip_v, ip_v, bp_v["fip"])
+        lam_v_f5 = rg_v * split_v * _frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * kbb_c * def_c * park * AJUSTE_BASE * cal_v
+        lam_c_f5 = rg_c * split_c * _frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * kbb_v * def_v * park * AJUSTE_BASE * HFA * cal_c
         overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
-        rl_casa_f5 = p_casa_f5 + p_empate_f5      # RL +0.5: "no va perdiendo tras 5" = gana o empata
+        rl_casa_f5 = p_casa_f5 + p_empate_f5
         rl_visita_f5 = p_visita_f5 + p_empate_f5
 
-        print(f"Inputs: {p_v} FIP {fip_v:.2f} ({ip_v:.1f}IP, {mano_v or '?'}) | "
-              f"{p_c} FIP {fip_c:.2f} ({ip_c:.1f}IP, {mano_c or '?'})")
-        print(f"Bullpens: {visita} {bullpen_era(visita):.2f} | {casa} {bullpen_era(casa):.2f}")
+        print(f"Inputs: {p_v} FIP {pv['fip']:.2f} (blend {fip_v:.2f}) {ip_v:.1f}IP {mano_v or '?'} | "
+              f"{p_c} FIP {pc['fip']:.2f} (blend {fip_c:.2f}) {ip_c:.1f}IP {mano_c or '?'}")
+        print(f"Bullpens: {visita} FIP {bp_v['fip']:.2f} K/BB {bp_v['k9']:.1f}/{bp_v['bb9']:.1f} | "
+              f"{casa} FIP {bp_c['fip']:.2f} K/BB {bp_c['k9']:.1f}/{bp_c['bb9']:.1f}")
         print(f"Ofensivas: {visita} {rg_v:.2f}x{split_v:.2f} | {casa} {rg_c:.2f}x{split_c:.2f} R/G | Park {park}")
+        print(f"Factores: KBB {kbb_c:.3f}/{kbb_v:.3f} | DEF {def_c:.3f}/{def_v:.3f} | CAL {cal_v:.3f}/{cal_c:.3f}")
         print(f"Carreras esp: {visita} {lam_v:.2f} — {casa} {lam_c:.2f} (total {lam_v+lam_c:.2f})")
         print(f"ML: {casa} {p_casa:.1%} ({prob_a_momio(p_casa)}) | {visita} {1-p_casa:.1%} ({prob_a_momio(1-p_casa)})")
         print(f"RL: {casa} -1.5 {p_casa_rl:.1%} | {visita} +1.5 {1-p_casa_rl:.1%}")
         print("Overs:  " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs.items()))
         print("Unders: " + " | ".join(f"U{ln} {1-p:.0%}" for ln, p in overs.items()))
 
-        # #F5: primeras 5 entradas
-        print("  [F5] Carreras esp: "
-              f"{visita} {lam_v_f5:.2f} — {casa} {lam_c_f5:.2f} (total {lam_v_f5+lam_c_f5:.2f})")
-        print(f"  [F5] ML 3 vias: {casa} {p_casa_f5:.1%} ({prob_a_momio(p_casa_f5)}) | "
+        print(f"[F5] Carreras esp: {visita} {lam_v_f5:.2f} — {casa} {lam_c_f5:.2f} (total {lam_v_f5+lam_c_f5:.2f})")
+        print(f"[F5] ML 3 vias: {casa} {p_casa_f5:.1%} ({prob_a_momio(p_casa_f5)}) | "
               f"empate {p_empate_f5:.1%} ({prob_a_momio(p_empate_f5)}) | "
               f"{visita} {p_visita_f5:.1%} ({prob_a_momio(p_visita_f5)})")
-        print(f"  [F5] RL +0.5: {casa} {rl_casa_f5:.1%} ({prob_a_momio(rl_casa_f5)}) | "
+        print(f"[F5] RL +0.5: {casa} {rl_casa_f5:.1%} ({prob_a_momio(rl_casa_f5)}) | "
               f"{visita} {rl_visita_f5:.1%} ({prob_a_momio(rl_visita_f5)})")
-        print("  [F5] Totales: " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs_f5.items()))
+        print(f"[F5] Totales: " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs_f5.items()))
 
         # #2: valor contra el mercado
         jugadas = valor.analizar_juego(valor.buscar(odds_slate, visita, casa), visita, casa, p_casa, overs)
