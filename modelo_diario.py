@@ -45,10 +45,11 @@ _cache_f5_frac = None
 SEMILLA = None       # pon un entero para resultados reproducibles (backtests)
 VIDA_MEDIA = 20      # juegos: peso de reciencia de la ofensiva (half-life)
 SPLIT_TOPE = 0.15    # +/-15% maximo que el split L/R puede mover una ofensiva
-PESO_FIP_RECIENTE = 0.35  # peso del FIP de ultimas 3 salidas en el blend (35% reciente, 65% temporada)
+PESO_FIP_RECIENTE = 0.35  # peso MAXIMO del FIP reciente; se escala por las IP que traiga
+SHRINK_IP = 60       # IP de regresion: el FIP de temporada se encoge hacia la liga segun muestra
+SHRINK_IP_REC = 20   # IP a las que el FIP reciente gana la mitad de su peso maximo
 LIGA_K9 = 8.80       # ponches por 9 innings (promedio MLB 2025-26)
 LIGA_BB9 = 3.20      # bases por bolas por 9 innings
-FACTOR_KBB_SUAVE = 0.25  # que tan fuerte el K/BB factor modifica carreras (0=nulo, 0.5=fuerte)
 
 # --- PARAMETROS DE PREDICCION DE HITS ---
 LIGA_AVG = 0.248     # promedio de bateo de la liga
@@ -112,7 +113,6 @@ cache_bullpen = {}   # nombre -> dict {fip, era, k9, bb9}
 cache_split = {}     # (nombre, mano) -> multiplicador
 _cache_tid = {}      # nombre -> team id
 _cache_defensa = {}  # nombre -> factor defensivo
-_cache_calibracion = {}  # nombre -> factor calibracion
 _cache_team_schedule = {}  # (tid, hoy) -> schedule list (compartido entre funciones)
 
 def _team_id(nombre):
@@ -184,8 +184,10 @@ def datos_pitcher(nombre):
         ip_esp = sum(ips) / len(ips) if ips else 5.0
         ip_esp = max(3.5, min(ip_esp, 7.0))
 
-        # FIP reciente: ultimas 3 salidas con >= 1 IP
-        fips_recientes = []
+        # FIP reciente: ultimas 3 salidas con >= 1 IP, ponderado por IP de cada
+        # salida (agregar los innings es el pooling correcto; el promedio simple
+        # dejaba que una salida de 1.2 IP pesara igual que una de 7)
+        fips_recientes = []   # (fip_salida, ip_salida)
         for g in log_splits[-3:]:
             gs = g["stat"]
             ip_j = ip_a_decimal(gs.get("inningsPitched", 0))
@@ -195,12 +197,16 @@ def datos_pitcher(nombre):
                     gs.get("hitByPitch", 0) or 0, gs.get("strikeOuts", 0) or 0, ip_j
                 )
                 if fj is not None:
-                    fips_recientes.append(fj)
-        fip_reciente = sum(fips_recientes) / len(fips_recientes) if fips_recientes else None
+                    fips_recientes.append((fj, ip_j))
+        ip_reciente = sum(ipj for _, ipj in fips_recientes)
+        fip_reciente = (sum(fj * ipj for fj, ipj in fips_recientes) / ip_reciente
+                        if ip_reciente > 0 else None)
 
         return _guardar_pitcher(nombre, {
             "fip": fip, "ip_esp": ip_esp, "mano": mano,
-            "k9": k9, "bb9": bb9, "baa": baa, "fip_reciente": fip_reciente,
+            "k9": k9, "bb9": bb9, "baa": baa,
+            "fip_reciente": fip_reciente,
+            "ip_temp": ip_temp, "ip_reciente": ip_reciente,
         })
     except Exception as e:
         print(f"⚠ Error con pitcher {nombre}: {e}")
@@ -211,13 +217,25 @@ def _guardar_pitcher(nombre, valor):
     return valor
 
 def fip_blend(p):
-    """Combina FIP de temporada con FIP reciente.
-    Si no hay reciente (sample pequeno), usa solo temporada."""
+    """FIP con encogimiento por tamano de muestra (shrinkage bayesiano simple).
+
+    1) El FIP de temporada regresa hacia LIGA_FIP segun sus IP: con pocas
+       entradas el numero es ruido y se le cree poco; con ~150+ IP domina.
+         fip_temp = (FIP*IP + LIGA_FIP*SHRINK_IP) / (IP + SHRINK_IP)
+    2) El FIP reciente (ultimas 3 salidas, ~15 IP) NO tiene peso fijo: gana
+       peso segun los innings que traiga, con tope PESO_FIP_RECIENTE.
+         w = PESO_FIP_RECIENTE * ip_rec / (ip_rec + SHRINK_IP_REC)
+       (3 salidas completas ~18 IP -> w~0.17; una apertura corta casi no mueve)
+    """
     if p is None or p["fip"] is None:
         return LIGA_FIP
-    if p["fip_reciente"] is None:
-        return p["fip"]
-    return p["fip"] * (1 - PESO_FIP_RECIENTE) + p["fip_reciente"] * PESO_FIP_RECIENTE
+    ip = p.get("ip_temp") or 0.0
+    fip_temp = (p["fip"] * ip + LIGA_FIP * SHRINK_IP) / (ip + SHRINK_IP)
+    if p.get("fip_reciente") is None:
+        return fip_temp
+    ip_rec = p.get("ip_reciente") or 0.0
+    w = PESO_FIP_RECIENTE * ip_rec / (ip_rec + SHRINK_IP_REC)
+    return fip_temp * (1 - w) + p["fip_reciente"] * w
 
 def carreras_por_juego(nombre_equipo, hoy):
     """#3: carreras/juego PONDERADAS por reciencia (half-life = VIDA_MEDIA juegos)."""
@@ -572,22 +590,10 @@ def multiplicador_pitcheo(fip_comb):
     crudo = fip_comb / LIGA_FIP
     return 1 + AMORTIGUA * (crudo - 1)
 
-def factor_kbb_comb(p_abridor, bp_stats):
-    """Factor K/BB combinado del staff (abridor + bullpen).
-    < 1 = suprimen carreras (alto K, bajo BB). > 1 = inflan carreras."""
-    if p_abridor is None:
-        return 1.0
-    ip_a = p_abridor["ip_esp"] or 5.0
-    ip_b = 9.0 - ip_a
-    k9_a = p_abridor["k9"] or LIGA_K9
-    bb9_a = p_abridor["bb9"] or LIGA_BB9
-
-    k9_comb = (k9_a * ip_a + bp_stats["k9"] * ip_b) / 9.0
-    bb9_comb = (bb9_a * ip_a + bp_stats["bb9"] * ip_b) / 9.0
-
-    k_factor = LIGA_K9 / k9_comb if k9_comb > 0 else 1.0
-    bb_factor = bb9_comb / LIGA_BB9 if LIGA_BB9 > 0 else 1.0
-    return 1 + FACTOR_KBB_SUAVE * ((k_factor * bb_factor) - 1)
+# NOTA: se elimino factor_kbb_comb. El FIP ya contiene K y BB en su formula
+# (13*HR + 3*BB - 2*K), asi que multiplicar ademas por un factor K/BB contaba
+# la misma senal dos veces y sobreconfiaba los extremos. K9/BB9 se siguen
+# calculando en datos_pitcher/bullpen_stats solo como dato informativo.
 
 def factor_defensivo(nombre_equipo):
     """Multiplicador por defensa del equipo. Basado en errores/juego.
@@ -619,45 +625,9 @@ def factor_defensivo(nombre_equipo):
         _cache_defensa[nombre_equipo] = 1.0
         return 1.0
 
-_cache_calibracion = {}
-
-def factor_calibracion(nombre_equipo, hoy):
-    """Factor correctivo por equipo. Calcula sesgo historico entre carreras reales
-    y las esperadas por el modelo (rg * ajustes). Si rg_model > rg_real, factor < 1."""
-    if nombre_equipo in _cache_calibracion:
-        return _cache_calibracion[nombre_equipo]
-    tid = _team_id(nombre_equipo)
-    if tid is None:
-        _cache_calibracion[nombre_equipo] = 1.0
-        return 1.0
-    temporada = _team_schedule(tid, hoy)
-    if not temporada:
-        _cache_calibracion[nombre_equipo] = 1.0
-        return 1.0
-
-    finales = [j for j in temporada if j["status"] == "Final"]
-    if len(finales) < 15:
-        _cache_calibracion[nombre_equipo] = 1.0
-        return 1.0
-
-    real_runs = []
-    for j in finales:
-        r = j["home_score"] if j["home_id"] == tid else j["away_score"]
-        real_runs.append(r or 0)
-
-    actual_avg = np.mean(real_runs)
-    # rg_ponderado ya nos da el promedio real. El sesgo que buscamos es si el equipo
-    # consistentemente rinde diferente a lo que su historia reciente sugiere.
-    # Usamos VIDA_MEDIA para el mismo ponderado que carreras_por_juego
-    n = len(real_runs)
-    pesos = [0.5 ** ((n - 1 - i) / VIDA_MEDIA) for i in range(n)]
-    actual_weighted = sum(p * r for p, r in zip(pesos, real_runs)) / sum(pesos) if sum(pesos) > 0 else actual_avg
-
-    sesgo = actual_weighted / max(actual_avg, 0.1)
-    factor = 1 + 0.2 * (sesgo - 1)  # suavizado al 20%
-    factor = max(0.94, min(factor, 1.06))
-    _cache_calibracion[nombre_equipo] = factor
-    return factor
+# NOTA: se elimino factor_calibracion. Comparaba el promedio ponderado por
+# reciencia contra el promedio simple... pero carreras_por_juego YA es ese
+# promedio ponderado (misma VIDA_MEDIA): aplicaba el mismo momentum ~1.2 veces.
 
 def simular_binom_neg(lam, n, k=DISPERSION_K):
     """ARREGLO 1: marcadores con binomial negativa (varianza > media).
@@ -665,7 +635,12 @@ def simular_binom_neg(lam, n, k=DISPERSION_K):
     p = k / (k + lam)
     return _rng().negative_binomial(k, p, n)
 
-def simular(lam_v, lam_c):
+LINEAS_TT = [2.5, 3.5, 4.5, 5.5]   # totales por equipo (team totals)
+N_MARCADORES = 5                    # top de marcadores mas probables
+
+def simular_completo(lam_v, lam_c):
+    """Simulacion completa: ademas de overs/ML/RL devuelve totales por equipo
+    y los marcadores mas probables. Devuelve un dict."""
     c_v = simular_binom_neg(lam_v, N_SIMS)
     c_c = simular_binom_neg(lam_c, N_SIMS)
     tot = c_v + c_c
@@ -673,7 +648,31 @@ def simular(lam_v, lam_c):
     moneda = _rng().random(N_SIMS) < (lam_c / (lam_c + lam_v))
     gana_c = (c_c > c_v) | (empates & moneda)
     overs = {ln: (tot > ln).mean() for ln in LINEAS}
-    return overs, gana_c.mean(), ((c_c - c_v) >= 2).mean()
+
+    # totales por equipo: P(carreras del equipo > linea)
+    tt_v = {ln: (c_v > ln).mean() for ln in LINEAS_TT}
+    tt_c = {ln: (c_c > ln).mean() for ln in LINEAS_TT}
+
+    # marcadores mas probables (codifica el par casa-visita en un entero)
+    codigo = c_c * 1000 + c_v
+    vals, counts = np.unique(codigo, return_counts=True)
+    top = np.argsort(-counts)[:N_MARCADORES]
+    marcadores = [{"casa": int(vals[i] // 1000), "visita": int(vals[i] % 1000),
+                   "p": counts[i] / N_SIMS} for i in top]
+
+    return {
+        "overs": overs,
+        "p_casa": gana_c.mean(),
+        "p_casa_rl": ((c_c - c_v) >= 2).mean(),
+        "tt_visita": tt_v,
+        "tt_casa": tt_c,
+        "marcadores": marcadores,
+    }
+
+def simular(lam_v, lam_c):
+    """Interfaz clasica (overs, p_casa, p_casa_rl); wrapper de simular_completo."""
+    r = simular_completo(lam_v, lam_c)
+    return r["overs"], r["p_casa"], r["p_casa_rl"]
 
 def simular_f5(lam_v, lam_c):
     """#F5: tras 5 entradas el EMPATE si es un resultado real (no hay desempate).
@@ -792,27 +791,22 @@ def correr(fecha=None):
         bp_v = bullpen_stats(visita)
         bp_c = bullpen_stats(casa)
 
-        # Factores nuevos
-        kbb_c = factor_kbb_comb(pc, bp_c)   # K/BB del pitcheo de CASA -> afecta a VISITA
-        kbb_v = factor_kbb_comb(pv, bp_v)   # K/BB del pitcheo de VISITA -> afecta a CASA
         def_v = factor_defensivo(visita)     # defensa de VISITA -> afecta a CASA
         def_c = factor_defensivo(casa)       # defensa de CASA -> afecta a VISITA
-        cal_v = factor_calibracion(visita, hoy)
-        cal_c = factor_calibracion(casa, hoy)
 
         pitcheo_c = fip_combinado(fip_c, ip_c, bp_c["fip"])
         pitcheo_v = fip_combinado(fip_v, ip_v, bp_v["fip"])
 
-        lam_v = rg_v * split_v * multiplicador_pitcheo(pitcheo_c) * kbb_c * def_c * park * AJUSTE_BASE * cal_v
-        lam_c = rg_c * split_c * multiplicador_pitcheo(pitcheo_v) * kbb_v * def_v * park * AJUSTE_BASE * HFA * cal_c
+        lam_v = rg_v * split_v * multiplicador_pitcheo(pitcheo_c) * def_c * park * AJUSTE_BASE
+        lam_c = rg_c * split_c * multiplicador_pitcheo(pitcheo_v) * def_v * park * AJUSTE_BASE * HFA
 
         overs, p_casa, p_casa_rl = simular(lam_v, lam_c)
         totales_slate.append(lam_v + lam_c)
 
         pitcheo_c_f5 = fip_f5(fip_c, ip_c, bp_c["fip"])
         pitcheo_v_f5 = fip_f5(fip_v, ip_v, bp_v["fip"])
-        lam_v_f5 = rg_v * split_v * _frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * kbb_c * def_c * park * AJUSTE_BASE * cal_v
-        lam_c_f5 = rg_c * split_c * _frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * kbb_v * def_v * park * AJUSTE_BASE * HFA * cal_c
+        lam_v_f5 = rg_v * split_v * _frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * AJUSTE_BASE
+        lam_c_f5 = rg_c * split_c * _frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * AJUSTE_BASE * HFA
         overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
         rl_casa_f5 = p_casa_f5 + p_empate_f5
         rl_visita_f5 = p_visita_f5 + p_empate_f5
@@ -822,7 +816,7 @@ def correr(fecha=None):
         print(f"Bullpens: {visita} FIP {bp_v['fip']:.2f} K/BB {bp_v['k9']:.1f}/{bp_v['bb9']:.1f} | "
               f"{casa} FIP {bp_c['fip']:.2f} K/BB {bp_c['k9']:.1f}/{bp_c['bb9']:.1f}")
         print(f"Ofensivas: {visita} {rg_v:.2f}x{split_v:.2f} | {casa} {rg_c:.2f}x{split_c:.2f} R/G | Park {park}")
-        print(f"Factores: KBB {kbb_c:.3f}/{kbb_v:.3f} | DEF {def_c:.3f}/{def_v:.3f} | CAL {cal_v:.3f}/{cal_c:.3f}")
+        print(f"Factores: DEF {def_c:.3f}/{def_v:.3f}")
         print(f"Carreras esp: {visita} {lam_v:.2f} — {casa} {lam_c:.2f} (total {lam_v+lam_c:.2f})")
         print(f"ML: {casa} {p_casa:.1%} ({prob_a_momio(p_casa)}) | {visita} {1-p_casa:.1%} ({prob_a_momio(1-p_casa)})")
         print(f"RL: {casa} -1.5 {p_casa_rl:.1%} | {visita} +1.5 {1-p_casa_rl:.1%}")

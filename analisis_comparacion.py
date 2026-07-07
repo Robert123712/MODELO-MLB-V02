@@ -70,18 +70,14 @@ for j in modelables:
     bp_v = m.bullpen_stats(visita)
     bp_c = m.bullpen_stats(casa)
 
-    kbb_c = m.factor_kbb_comb(pc, bp_c)
-    kbb_v = m.factor_kbb_comb(pv, bp_v)
     def_v = m.factor_defensivo(visita)
     def_c = m.factor_defensivo(casa)
-    cal_v = m.factor_calibracion(visita, FECHA)
-    cal_c = m.factor_calibracion(casa, FECHA)
 
     pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
     pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
 
-    lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-    lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+    lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
+    lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
 
     overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
 
@@ -90,8 +86,8 @@ for j in modelables:
     # ultimo juego -> numeros mezclados. Ahora todo vive por juego.
     pitcheo_c_f5 = m.fip_f5(fip_c, ip_c, bp_c["fip"])
     pitcheo_v_f5 = m.fip_f5(fip_v, ip_v, bp_v["fip"])
-    lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-    lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+    lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * m.AJUSTE_BASE
+    lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * m.AJUSTE_BASE * m.HFA
 
     pred_total = lam_v + lam_c
     err_total = pred_total - real_total

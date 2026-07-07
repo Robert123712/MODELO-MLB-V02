@@ -116,7 +116,7 @@ def generar(fecha=None):
         "FIP V", "FIP C", "IP V", "IP C",
         "Bullpen V", "Bullpen C",
         "RG V", "RG C", "Split V", "Split C", "Park",
-        "KBB V", "KBB C", "DEF V", "DEF C",
+        "DEF V", "DEF C",
         "λ V", "λ C", "Total λ",
         "ML V %", "ML V Momio", "ML C %", "ML C Momio",
         "RL V +1.5", "RL C -1.5",
@@ -151,18 +151,14 @@ def generar(fecha=None):
         bp_v = m.bullpen_stats(visita)
         bp_c = m.bullpen_stats(casa)
 
-        kbb_c = m.factor_kbb_comb(pc, bp_c)
-        kbb_v = m.factor_kbb_comb(pv, bp_v)
         def_v = m.factor_defensivo(visita)
         def_c = m.factor_defensivo(casa)
-        cal_v = m.factor_calibracion(visita, hoy)
-        cal_c = m.factor_calibracion(casa, hoy)
 
         pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
         pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
 
-        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
+        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
         total_slate += lam_v + lam_c
 
         overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
@@ -176,7 +172,7 @@ def generar(fecha=None):
             round(fip_v, 2), round(fip_c, 2), round(ip_v, 1), round(ip_c, 1),
             round(bp_v["fip"], 2), round(bp_c["fip"], 2),
             round(rg_v, 2), round(rg_c, 2), round(split_v, 3), round(split_c, 3), park,
-            round(kbb_v, 3), round(kbb_c, 3), round(def_v, 3), round(def_c, 3),
+            round(def_v, 3), round(def_c, 3),
             round(lam_v, 2), round(lam_c, 2), round(lam_v + lam_c, 2),
             round(1 - p_casa, 4), prob_a_momio(1 - p_casa),
             round(p_casa, 4), prob_a_momio(p_casa),
@@ -191,19 +187,19 @@ def generar(fecha=None):
             cell.border = thin_border
             if alt_fill:
                 cell.fill = alt_fill
-            if isinstance(val, float) and col >= 29:
+            if isinstance(val, float) and col >= 27:  # overs (tras quitar KBB, corren 2 cols)
                 cell.number_format = pct_fmt
                 colorear_overs(ws1, row, col, val)
             elif isinstance(val, float):
                 cell.number_format = dec_fmt if col not in (15,) else dec_fmt
-            if col in (23, 25):  # ML %
+            if col in (21, 23):  # ML %
                 cell.number_format = pct_fmt
-            if col in (24, 26):  # Momios
+            if col in (22, 24):  # Momios
                 cell.alignment = Alignment(horizontal="center")
 
     # Anchos de columna
     anchos = [20, 20, 18, 18, 7, 7, 6, 6, 9, 9, 7, 7, 7, 7, 5,
-              7, 7, 7, 7, 7, 7, 8, 9, 9, 9, 9, 9, 9, 6, 6, 6, 6, 6, 6]
+              7, 7, 7, 7, 8, 9, 9, 9, 9, 9, 9, 6, 6, 6, 6, 6, 6]
     for i, a in enumerate(anchos, 1):
         ws1.column_dimensions[get_column_letter(i)].width = a
     ws1.freeze_panes = ws1.cell(row=fila + 1, column=1)
@@ -244,25 +240,21 @@ def generar(fecha=None):
         bp_v = m.bullpen_stats(visita)
         bp_c = m.bullpen_stats(casa)
 
-        kbb_c = m.factor_kbb_comb(pc, bp_c)
-        kbb_v = m.factor_kbb_comb(pv, bp_v)
         def_v = m.factor_defensivo(visita)
         def_c = m.factor_defensivo(casa)
-        cal_v = m.factor_calibracion(visita, hoy)
-        cal_c = m.factor_calibracion(casa, hoy)
 
         pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
         pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
 
-        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
+        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
 
         overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
 
         pitcheo_c_f5 = m.fip_f5(fip_c, ip_c, bp_c["fip"])
         pitcheo_v_f5 = m.fip_f5(fip_v, ip_v, bp_v["fip"])
-        lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-        lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+        lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * m.AJUSTE_BASE
+        lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * m.AJUSTE_BASE * m.HFA
         overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = m.simular_f5(lam_v_f5, lam_c_f5)
 
         # ── CABECERA DEL JUEGO ──
@@ -294,9 +286,7 @@ def generar(fecha=None):
         par(fila2, "Bullpen FIP", round(bp_v["fip"], 2), round(bp_c["fip"], 2)); fila2 += 1
         par(fila2, "R/G (reciencia)", round(rg_v, 2), round(rg_c, 2)); fila2 += 1
         par(fila2, "Split vs Mano", round(split_v, 3), round(split_c, 3)); fila2 += 1
-        par(fila2, "Factor K/BB", round(kbb_v, 3), round(kbb_c, 3)); fila2 += 1
         par(fila2, "Factor DEF", round(def_v, 3), round(def_c, 3)); fila2 += 1
-        par(fila2, "Factor Calibración", round(cal_v, 3), round(cal_c, 3)); fila2 += 1
         par(fila2, "Carreras Esperadas (λ)", round(lam_v, 2), round(lam_c, 2)); fila2 += 1
         par(fila2, "Total Esperado", round(lam_v + lam_c, 2), "—"); fila2 += 1
         par(fila2, "Park Factor", park, "—"); fila2 += 1
@@ -385,16 +375,12 @@ def generar(fecha=None):
         split_c = m.split_ofensivo(casa, pv["mano"])
         bp_v = m.bullpen_stats(visita)
         bp_c = m.bullpen_stats(casa)
-        kbb_c = m.factor_kbb_comb(pc, bp_c)
-        kbb_v = m.factor_kbb_comb(pv, bp_v)
         def_v = m.factor_defensivo(visita)
         def_c = m.factor_defensivo(casa)
-        cal_v = m.factor_calibracion(visita, hoy)
-        cal_c = m.factor_calibracion(casa, hoy)
         pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
         pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
-        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
+        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
         overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
 
         jugadas = m.valor.analizar_juego(m.valor.buscar(ods, visita, casa), visita, casa, p_casa, overs)

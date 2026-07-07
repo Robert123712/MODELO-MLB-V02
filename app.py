@@ -72,25 +72,22 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
     bp_v = m.bullpen_stats(visita)
     bp_c = m.bullpen_stats(casa)
 
-    kbb_c = m.factor_kbb_comb(pc, bp_c)
-    kbb_v = m.factor_kbb_comb(pv, bp_v)
     def_v = m.factor_defensivo(visita)
     def_c = m.factor_defensivo(casa)
-    cal_v = m.factor_calibracion(visita, hoy)
-    cal_c = m.factor_calibracion(casa, hoy)
 
     pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
     pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
 
-    lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-    lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+    lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
+    lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
 
-    overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
+    sim = m.simular_completo(lam_v, lam_c)
+    overs, p_casa, p_casa_rl = sim["overs"], sim["p_casa"], sim["p_casa_rl"]
 
     pitcheo_c_f5 = m.fip_f5(fip_c, ip_c, bp_c["fip"])
     pitcheo_v_f5 = m.fip_f5(fip_v, ip_v, bp_v["fip"])
-    lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * kbb_c * def_c * park * m.AJUSTE_BASE * cal_v
-    lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * kbb_v * def_v * park * m.AJUSTE_BASE * m.HFA * cal_c
+    lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * m.AJUSTE_BASE
+    lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * m.AJUSTE_BASE * m.HFA
     overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = m.simular_f5(lam_v_f5, lam_c_f5)
     rl_casa_f5 = p_casa_f5 + p_empate_f5
     rl_visita_f5 = p_visita_f5 + p_empate_f5
@@ -125,12 +122,8 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
         "split_v": round(split_v, 3),
         "split_c": round(split_c, 3),
         "park": park,
-        "kbb_c": round(kbb_c, 3),
-        "kbb_v": round(kbb_v, 3),
         "def_c": round(def_c, 3),
         "def_v": round(def_v, 3),
-        "cal_v": round(cal_v, 3),
-        "cal_c": round(cal_c, 3),
         "lam_v": round(lam_v, 2),
         "lam_c": round(lam_c, 2),
         "p_casa": round(p_casa, 4),
@@ -138,6 +131,10 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
         "p_casa_rl": round(p_casa_rl, 4),
         "p_visita_rl": round(1 - p_casa_rl, 4),
         "overs": {str(k): round(val, 4) for k, val in overs.items()},
+        "tt_visita": {str(k): round(val, 4) for k, val in sim["tt_visita"].items()},
+        "tt_casa": {str(k): round(val, 4) for k, val in sim["tt_casa"].items()},
+        "marcadores": [{"casa": mc["casa"], "visita": mc["visita"], "p": round(mc["p"], 4)}
+                       for mc in sim["marcadores"]],
         "f5": {
             "lam_v": round(lam_v_f5, 2),
             "lam_c": round(lam_c_f5, 2),
