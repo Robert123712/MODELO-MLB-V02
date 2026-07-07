@@ -194,11 +194,10 @@
 
     <div class="controls">
       <div>
-        <label for="fecha">Fecha</label>
-        <input type="date" id="fecha">
+        <label>Snapshot diario</label>
+        <p id="snapshot-info" style="font-size:14px; color:var(--ink-2); font-weight:600;">Cargando…</p>
+        <p style="font-size:12px; color:var(--ink-3); margin-top:3px;">Se actualiza automáticamente cada día (~10:30am CDMX) con los abridores anunciados</p>
       </div>
-      <button id="btn-run" class="btn-primary">Correr modelo</button>
-      <button id="btn-hoy" class="btn-ghost" title="Hoy">📅 Hoy</button>
       <p id="calibracion-info" class="calib hidden"></p>
     </div>
 
@@ -213,8 +212,8 @@
 
     <div id="empty-state" class="empty hidden">
       <div class="big">📋</div>
-      <p>Selecciona una fecha y presiona <strong>Correr modelo</strong></p>
-      <p style="color:var(--ink-3); font-size:13px; margin-top:4px;">Aquí aparecerán las predicciones del día</p>
+      <p>Aún no hay una corrida publicada</p>
+      <p style="color:var(--ink-3); font-size:13px; margin-top:4px;">La primera corrida automática del modelo aparecerá aquí (o dispárala a mano desde la pestaña Actions del repo)</p>
     </div>
 
     <div id="error" class="error hidden"></div>
@@ -225,54 +224,33 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const btnRun = $('btn-run'), btnHoy = $('btn-hoy'), fechaInput = $('fecha');
 const resultados = $('resultados'), gameCards = $('game-cards'), skeleton = $('skeleton');
 const emptyState = $('empty-state'), errorDiv = $('error');
 const slateSummary = $('slate-summary'), calibInfo = $('calibracion-info'), statusInd = $('status-indicator');
-
-function fmtFecha(d) {
-  const mm = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
-}
-function toAPI(f) { const [y,m,d] = f.split('-'); return `${m}/${d}/${y}`; }
-
-fechaInput.value = fmtFecha(new Date());
-emptyState.classList.remove('hidden');
-btnHoy.addEventListener('click', () => { fechaInput.value = fmtFecha(new Date()); });
-btnRun.addEventListener('click', correr);
+const snapshotInfo = $('snapshot-info');
 
 function setStatus(cls, txt) { statusInd.innerHTML = `<span class="dot ${cls}"></span> ${txt}`; }
 
-async function correr() {
-  const fecha = fechaInput.value;
-  if (!fecha) return;
-  btnRun.disabled = true; btnRun.textContent = 'Ejecutando…';
-  resultados.classList.add('hidden'); errorDiv.classList.add('hidden');
-  emptyState.classList.add('hidden'); skeleton.classList.remove('hidden');
-  setStatus('run', 'Simulando…');
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 300000);
+async function cargar() {
+  skeleton.classList.remove('hidden');
+  setStatus('run', 'Cargando…');
   try {
-    const res = await fetch('/api/simular', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fecha: toAPI(fecha) }), signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (!res.ok) throw new Error(`Error ${res.status}: ${await res.text()}`);
-    renderResultados(await res.json());
+    const res = await fetch('data/latest.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('sin datos');
+    const data = await res.json();
+    const gen = data.generado_en ? new Date(data.generado_en) : null;
+    snapshotInfo.textContent = `Slate del ${data.fecha}` +
+      (gen ? ` · generado ${gen.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}` : '');
+    renderResultados(data);
   } catch (err) {
-    clearTimeout(timeoutId);
-    errorDiv.textContent = '⚠ ' + (err.name === 'AbortError'
-      ? 'La simulación tardó demasiado (>5 min). Reintenta o revisa la conexión a las APIs.'
-      : err.message);
-    errorDiv.classList.remove('hidden');
-    setStatus('err', 'Error');
+    snapshotInfo.textContent = 'Sin datos todavía';
+    emptyState.classList.remove('hidden');
+    setStatus('err', 'Sin corrida');
   } finally {
     skeleton.classList.add('hidden');
-    btnRun.disabled = false; btnRun.textContent = 'Correr modelo';
   }
 }
+cargar();
 
 /* ---------- helpers de formato ---------- */
 const pct = p => (p * 100).toFixed(1) + '%';

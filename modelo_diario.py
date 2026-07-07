@@ -638,6 +638,29 @@ def simular_binom_neg(lam, n, k=DISPERSION_K):
 LINEAS_TT = [2.5, 3.5, 4.5, 5.5]   # totales por equipo (team totals)
 N_MARCADORES = 5                    # top de marcadores mas probables
 
+# --- NRFI / YRFI (primera entrada) ---
+FACTOR_INN1 = 1.12       # la 1ra entrada anota ~10-15% mas que la entrada promedio:
+                         # siempre batea el top del lineup
+DISPERSION_K_INN = 0.38  # k de la binomial negativa POR ENTRADA. Mucho mas bajo que el
+                         # k del juego (4.0): la mayoria de las entradas son cero y las
+                         # que anotan a veces anotan en racimo. Calibrado para reproducir
+                         # ~72% de mitades sin carrera / ~52% NRFI de liga
+
+def lambda_inning1(rg, split, mult_abridor_rival, def_rival, park, hfa=1.0):
+    """Carreras esperadas de UN equipo en la 1ra entrada.
+    Solo lanza el abridor rival (sin bullpen) y batea el top del orden."""
+    return rg * split * mult_abridor_rival * def_rival * park * AJUSTE_BASE * hfa / 9.0 * FACTOR_INN1
+
+def prob_nrfi(lam1_v, lam1_c):
+    """NRFI/YRFI analitico. P(0) de la binomial negativa: (k/(k+lam))^k por
+    mitad de entrada; NRFI = ambas mitades en cero."""
+    k = DISPERSION_K_INN
+    p0_v = (k / (k + lam1_v)) ** k
+    p0_c = (k / (k + lam1_c)) ** k
+    nrfi = p0_v * p0_c
+    return {"nrfi": nrfi, "yrfi": 1 - nrfi,
+            "anota_visita": 1 - p0_v, "anota_casa": 1 - p0_c}
+
 def simular_completo(lam_v, lam_c):
     """Simulacion completa: ademas de overs/ML/RL devuelve totales por equipo
     y los marcadores mas probables. Devuelve un dict."""
@@ -830,6 +853,14 @@ def correr(fecha=None):
         print(f"[F5] RL +0.5: {casa} {rl_casa_f5:.1%} ({prob_a_momio(rl_casa_f5)}) | "
               f"{visita} {rl_visita_f5:.1%} ({prob_a_momio(rl_visita_f5)})")
         print(f"[F5] Totales: " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs_f5.items()))
+
+        # NRFI/YRFI: 1ra entrada, lanza solo el abridor (FIP blend, sin bullpen)
+        l1_v = lambda_inning1(rg_v, split_v, multiplicador_pitcheo(fip_c), def_c, park)
+        l1_c = lambda_inning1(rg_c, split_c, multiplicador_pitcheo(fip_v), def_v, park, HFA)
+        nrfi = prob_nrfi(l1_v, l1_c)
+        print(f"[1ra] NRFI {nrfi['nrfi']:.1%} ({prob_a_momio(nrfi['nrfi'])}) | "
+              f"YRFI {nrfi['yrfi']:.1%} ({prob_a_momio(nrfi['yrfi'])}) | "
+              f"anota: {visita} {nrfi['anota_visita']:.1%}, {casa} {nrfi['anota_casa']:.1%}")
 
         # #2: valor contra el mercado
         jugadas = valor.analizar_juego(valor.buscar(odds_slate, visita, casa), visita, casa, p_casa, overs)
