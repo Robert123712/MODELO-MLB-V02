@@ -92,6 +92,11 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
     rl_casa_f5 = p_casa_f5 + p_empate_f5
     rl_visita_f5 = p_visita_f5 + p_empate_f5
 
+    # NRFI/YRFI: 1ra entrada, lanza solo el abridor
+    l1_v = m.lambda_inning1(rg_v, split_v, m.multiplicador_pitcheo(fip_c), def_c, park)
+    l1_c = m.lambda_inning1(rg_c, split_c, m.multiplicador_pitcheo(fip_v), def_v, park, m.HFA)
+    nrfi = m.prob_nrfi(l1_v, l1_c)
+
     jugadas = v.analizar_juego(v.buscar(odds_slate, visita, casa), visita, casa, p_casa, overs)
 
     bateo = m.predecir_hits_juego(visita, casa, j.get("game_id"), pv, pc, park, split_v, split_c)
@@ -135,6 +140,7 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
         "tt_casa": {str(k): round(val, 4) for k, val in sim["tt_casa"].items()},
         "marcadores": [{"casa": mc["casa"], "visita": mc["visita"], "p": round(mc["p"], 4)}
                        for mc in sim["marcadores"]],
+        "nrfi": {k: round(val, 4) for k, val in nrfi.items()},
         "f5": {
             "lam_v": round(lam_v_f5, 2),
             "lam_c": round(lam_c_f5, 2),
