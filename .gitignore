@@ -17,3 +17,14 @@ env/
 
 # Archivos temporales o vacios
 *.tmp
+
+# Logs de la web app local (uvicorn)
+server_out.txt
+server_err.txt
+
+# Salidas generadas por el modelo
+exports/
+
+# Cache de la fraccion F5 (se regenera solo desde datos de la temporada;
+# no versionar para que no quede congelado un valor viejo)
+f5_frac_cache.json
