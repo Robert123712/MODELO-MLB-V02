@@ -260,8 +260,21 @@ def carreras_por_juego(nombre_equipo, hoy):
     cache_equipo[nombre_equipo] = rg
     return rg
 
+def _float_seguro(v):
+    """La API a veces trae numeros como texto ('3.61') o basura ('-.--')."""
+    try:
+        f = float(v)
+        return f if f == f else None  # descarta NaN
+    except (TypeError, ValueError):
+        return None
+
 def bullpen_stats(nombre_equipo):
-    """#4+: Stats de relevistas: fip, era, k9, bb9 (split 'rp'). Cacheado."""
+    """#4+: Stats de relevistas: fip, era, k9, bb9 (split 'rp'). Cacheado.
+
+    OJO: la MLB StatsAPI NO expone 'fip' (es metrica de FanGraphs), asi que el
+    FIP del bullpen se CALCULA aqui con los componentes del split (HR, BB, HBP,
+    K, IP). El codigo anterior hacia st.get('fip', LIGA_FIP) y como el campo no
+    existe, los 30 bullpens salian identicos en 4.15."""
     if nombre_equipo in BULLPEN_OVERRIDE:
         return {"fip": BULLPEN_OVERRIDE[nombre_equipo], "era": BULLPEN_OVERRIDE[nombre_equipo], "k9": LIGA_K9, "bb9": LIGA_BB9}
     if nombre_equipo in cache_bullpen:
@@ -276,14 +289,30 @@ def bullpen_stats(nombre_equipo):
             sp = d["stats"][0]["splits"]
             if sp:
                 st = sp[0]["stat"]
-                bp["fip"] = float(st.get("fip", LIGA_FIP) or LIGA_FIP)
-                bp["era"] = float(st.get("era", LIGA_FIP) or LIGA_FIP)
                 ip_bp = ip_a_decimal(st.get("inningsPitched", 0))
+                era = _float_seguro(st.get("era"))
+                if era is not None and era > 0:
+                    bp["era"] = era
+
+                fip_calc = None
+                if ip_bp > 0:
+                    fip_calc = calcular_fip(
+                        st.get("homeRuns", 0) or 0,
+                        st.get("baseOnBalls", 0) or 0,
+                        st.get("hitByPitch", 0) or 0,
+                        st.get("strikeOuts", 0) or 0,
+                        ip_bp,
+                    )
+                if fip_calc is not None:
+                    bp["fip"] = fip_calc
+                elif era is not None and era > 0:
+                    bp["fip"] = era   # aproximacion si faltan componentes
+
                 if ip_bp > 0:
                     bp["k9"] = (st.get("strikeOuts", 0) or 0) * 9 / ip_bp
                     bp["bb9"] = (st.get("baseOnBalls", 0) or 0) * 9 / ip_bp
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠ Bullpen de {nombre_equipo}: sin datos, usando promedio de liga ({e})")
     cache_bullpen[nombre_equipo] = bp
     return bp
 
