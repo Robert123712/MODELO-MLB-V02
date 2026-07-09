@@ -65,3 +65,13 @@ fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_ov
 07/08/2026,Colorado Rockies,Los Angeles Dodgers,Gabriel Hughes,Roki Sasaki,5.57,5.36,10.94,0.482,0.732,0.652,0.567,5.95,0.390,0.136,0.473,0.604,0.527,0.610
 07/08/2026,Arizona Diamondbacks,San Diego Padres,Jose Cabrera,Michael King,3.23,3.47,6.70,0.524,0.360,0.271,0.196,3.57,0.422,0.207,0.372,0.304,0.628,0.578
 07/08/2026,Philadelphia Phillies,Cincinnati Reds,Alan Rangel,Chase Burns,4.97,3.74,8.71,0.383,0.566,0.469,0.383,4.37,0.361,0.173,0.466,0.413,0.534,0.639
+07/09/2026,Atlanta Braves,Pittsburgh Pirates,Bryce Elder,Mitch Keller,4.51,5.47,9.98,0.579,0.669,0.581,0.493,5.41,0.496,0.144,0.360,0.545,0.640,0.504
+07/09/2026,Kansas City Royals,New York Mets,Michael Wacha,Sean Manaea,4.44,4.31,8.74,0.486,0.569,0.473,0.383,4.52,0.393,0.168,0.440,0.437,0.560,0.607
+07/09/2026,Chicago Cubs,Baltimore Orioles,David Peterson,Trevor Rogers,5.20,4.29,9.49,0.420,0.630,0.540,0.449,4.88,0.361,0.157,0.481,0.481,0.519,0.639
+07/09/2026,Cleveland Guardians,Minnesota Twins,Gavin Williams,Bailey Ober,4.06,5.03,9.09,0.588,0.600,0.507,0.414,4.80,0.473,0.158,0.369,0.470,0.631,0.527
+07/09/2026,Athletics,Detroit Tigers,Jack Perkins,Framber Valdez,4.37,4.47,8.84,0.508,0.576,0.479,0.391,4.58,0.416,0.167,0.417,0.448,0.583,0.584
+07/09/2026,Seattle Mariners,Miami Marlins,Bryce Miller,Janson Junk,3.65,4.28,7.94,0.564,0.492,0.397,0.310,4.19,0.436,0.178,0.387,0.395,0.613,0.564
+07/09/2026,Philadelphia Phillies,Cincinnati Reds,Jesús Luzardo,Brady Singer,5.62,4.16,9.78,0.373,0.656,0.566,0.476,5.00,0.326,0.151,0.523,0.497,0.477,0.674
+07/09/2026,Milwaukee Brewers,St. Louis Cardinals,Logan Henderson,Andre Pallante,4.50,4.06,8.55,0.460,0.552,0.455,0.366,4.40,0.390,0.171,0.439,0.421,0.561,0.610
+07/09/2026,Los Angeles Angels,Texas Rangers,Reid Detmers,Nathan Eovaldi,4.16,4.24,8.40,0.509,0.536,0.440,0.352,4.24,0.406,0.177,0.417,0.397,0.583,0.594
+07/09/2026,Arizona Diamondbacks,San Diego Padres,Merrill Kelly,Griffin Canning,3.33,3.99,7.32,0.572,0.434,0.336,0.254,4.01,0.466,0.184,0.350,0.367,0.650,0.534
