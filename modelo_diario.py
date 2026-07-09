@@ -44,6 +44,9 @@ _cache_f5_frac = None
 # --- PARAMETROS NUEVOS (Sprint 5+) ---
 SEMILLA = None       # pon un entero para resultados reproducibles (backtests)
 VIDA_MEDIA = 20      # juegos: peso de reciencia de la ofensiva (half-life)
+PESO_OFENSIVA_RECIENTE = 0.45  # mezcla de la ofensiva: 45% reciencia / 55% temporada
+                               # completa. Reciencia pura persigue rachas de bateo
+                               # (mayormente ruido) y peleaba MLs contra el mercado
 SPLIT_TOPE = 0.15    # +/-15% maximo que el split L/R puede mover una ofensiva
 PESO_FIP_RECIENTE = 0.35  # peso MAXIMO del FIP reciente; se escala por las IP que traiga
 SHRINK_IP = 60       # IP de regresion: el FIP de temporada se encoge hacia la liga segun muestra
@@ -238,7 +241,16 @@ def fip_blend(p):
     return fip_temp * (1 - w) + p["fip_reciente"] * w
 
 def carreras_por_juego(nombre_equipo, hoy):
-    """#3: carreras/juego PONDERADAS por reciencia (half-life = VIDA_MEDIA juegos)."""
+    """#3+: carreras/juego del equipo, con dos correcciones anti-ruido:
+
+    1) PARK-AJUSTADAS: las carreras de cada juego se dividen entre el factor
+       del estadio DONDE SE JUGO. Sin esto, media temporada en Coors (1.20)
+       se contaba como talento ofensivo (y jugar en Oracle/Petco lo escondia).
+    2) MEZCLA temporada/reciencia: la reciencia pura (half-life 20) dejaba que
+       las ultimas ~3 semanas fueran ~52% de la senal y el modelo persiguiera
+       rachas de bateo. Ahora: 55% promedio de temporada (talento) + 45%
+       ponderado por reciencia (lesiones/cambios de roster reales).
+    """
     if nombre_equipo in cache_equipo:
         return cache_equipo[nombre_equipo]
     tid = _team_id(nombre_equipo)
@@ -248,15 +260,22 @@ def carreras_por_juego(nombre_equipo, hoy):
     if not temporada:
         cache_equipo[nombre_equipo] = 4.4
         return 4.4
-    anotadas = [j["home_score"] if j["home_id"] == tid else j["away_score"]
-                for j in temporada if j["status"] == "Final"]
+    anotadas = []
+    for j in temporada:
+        if j["status"] != "Final":
+            continue
+        runs = (j["home_score"] if j["home_id"] == tid else j["away_score"]) or 0
+        park_sede = PARK.get(j["home_name"], 1.00)   # el park del equipo LOCAL de ese juego
+        anotadas.append(runs / park_sede)
     if not anotadas:
         cache_equipo[nombre_equipo] = 4.4
         return 4.4
     # los juegos vienen en orden cronologico: el ultimo es el mas reciente
     n = len(anotadas)
     pesos = [0.5 ** ((n - 1 - i) / VIDA_MEDIA) for i in range(n)]
-    rg = sum(p * r for p, r in zip(pesos, anotadas)) / sum(pesos)
+    rg_reciente = sum(p * r for p, r in zip(pesos, anotadas)) / sum(pesos)
+    rg_temporada = sum(anotadas) / n
+    rg = (1 - PESO_OFENSIVA_RECIENTE) * rg_temporada + PESO_OFENSIVA_RECIENTE * rg_reciente
     cache_equipo[nombre_equipo] = rg
     return rg
 
