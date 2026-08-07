@@ -94,21 +94,29 @@ def generar(fecha=None):
 
     _frac_f5 = m.f5_frac_liga(hoy)
 
+    # Se evalua CADA JUEGO UNA SOLA VEZ. Antes cada hoja repetia la tuberia
+    # completa: el mismo juego se simulaba 3 veces (3x llamadas y 3x Monte Carlo).
+    evaluados = [r for r in (m.evaluar_juego(j, hoy, _frac_f5) for j in modelables) if r]
+    if not evaluados:
+        print("⚠ Ningun juego pudo evaluarse.", flush=True)
+        return
+
     wb = openpyxl.Workbook()
     # ── SHEET 1: RESUMEN ──
     ws1 = wb.active
     ws1.title = "Resumen"
     ws1.sheet_properties.tabColor = AZUL
 
-    # Título
     ws1.merge_cells("A1:N1")
     titulo = ws1.cell(row=1, column=1, value=f"⚾ PREDICCIONES MLB — {hoy}")
     titulo.font = title_font
     ws1.row_dimensions[1].height = 30
 
-    # Parámetros
     ws1.merge_cells("A2:N2")
-    ws1.cell(row=2, column=1, value=f"Calibración: amortigua={m.AMORTIGUA} | dispersion_k={m.DISPERSION_K} | base={m.AJUSTE_BASE} | F5 frac={_frac_f5:.3f} | Sims={m.N_SIMS:,}").font = Font(name="Calibri", italic=True, color="666666", size=9)
+    ws1.cell(row=2, column=1, value=(
+        f"Calibración: amortigua={m.AMORTIGUA} | dispersion_k={m.DISPERSION_K} | "
+        f"base={m.AJUSTE_BASE} | F5 frac={_frac_f5:.3f} | Sims={m.N_SIMS:,}"
+    )).font = Font(name="Calibri", italic=True, color="666666", size=9)
 
     fila = 4
     headers = [
@@ -120,94 +128,63 @@ def generar(fecha=None):
         "λ V", "λ C", "Total λ",
         "ML V %", "ML V Momio", "ML C %", "ML C Momio",
         "RL V +1.5", "RL C -1.5",
-        "O5.5", "O6.5", "O7.5", "O8.5", "O9.5", "O10.5"
+        "NRFI",
+        "O5.5", "O6.5", "O7.5", "O8.5", "O9.5", "O10.5",
     ]
     escribir_encabezados(ws1, fila, headers)
     ws1.row_dimensions[fila].height = 35
 
     data_fila = fila + 1
-    total_slate = 0
+    COL_OVERS = 28          # primera columna de overs (1-indexada)
+    COL_ML_PCT = (21, 23)
+    COL_ML_MOM = (22, 24)
 
-    for idx, j in enumerate(modelables):
-        visita, casa = j["away_name"], j["home_name"]
-        p_v, p_c = j["away_probable_pitcher"], j["home_probable_pitcher"]
-
-        pv = m.datos_pitcher(p_v)
-        pc = m.datos_pitcher(p_c)
-        if pv is None or pc is None or pv["fip"] is None or pc["fip"] is None:
-            continue
-
-        fip_v = m.fip_blend(pv)
-        fip_c = m.fip_blend(pc)
-        ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
-        mano_v, mano_c = pv["mano"], pc["mano"]
-
-        rg_v = m.carreras_por_juego(visita, hoy)
-        rg_c = m.carreras_por_juego(casa, hoy)
-        park = m.PARK.get(casa, 1.00)
-        split_v = m.split_ofensivo(visita, mano_c)
-        split_c = m.split_ofensivo(casa, mano_v)
-
-        bp_v = m.bullpen_stats(visita)
-        bp_c = m.bullpen_stats(casa)
-
-        def_v = m.factor_defensivo(visita)
-        def_c = m.factor_defensivo(casa)
-
-        pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
-        pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
-
-        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
-        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
-        total_slate += lam_v + lam_c
-
-        overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
-
-        row = data_fila + idx
-        f = data_font
-        alt_fill = PatternFill("solid", fgColor=GRIS) if idx % 2 == 0 else None
-
+    for idx, r in enumerate(evaluados):
+        overs, p_casa = r["overs"], r["p_casa"]
         datos = [
-            visita, casa, p_v, p_c,
-            round(fip_v, 2), round(fip_c, 2), round(ip_v, 1), round(ip_c, 1),
-            round(bp_v["fip"], 2), round(bp_c["fip"], 2),
-            round(rg_v, 2), round(rg_c, 2), round(split_v, 3), round(split_c, 3), park,
-            round(def_v, 3), round(def_c, 3),
-            round(lam_v, 2), round(lam_c, 2), round(lam_v + lam_c, 2),
-            round(1 - p_casa, 4), prob_a_momio(1 - p_casa),
+            r["visita"], r["casa"], r["abridor_v"], r["abridor_c"],
+            round(r["fip_v"], 2), round(r["fip_c"], 2), round(r["ip_v"], 1), round(r["ip_c"], 1),
+            round(r["bp_v"]["fip"], 2), round(r["bp_c"]["fip"], 2),
+            round(r["rg_v"], 2), round(r["rg_c"], 2),
+            round(r["split_v"], 3), round(r["split_c"], 3), r["park"],
+            round(r["def_v"], 3), round(r["def_c"], 3),
+            round(r["lam_v"], 2), round(r["lam_c"], 2), round(r["total_esp"], 2),
+            round(r["p_visita"], 4), prob_a_momio(r["p_visita"]),
             round(p_casa, 4), prob_a_momio(p_casa),
-            round(1 - p_casa_rl, 4), round(p_casa_rl, 4),
+            round(r["p_visita_rl"], 4), round(r["p_casa_rl"], 4),
+            round(r["nrfi"]["nrfi"], 4),
             round(overs[5.5], 4), round(overs[6.5], 4), round(overs[7.5], 4),
             round(overs[8.5], 4), round(overs[9.5], 4), round(overs[10.5], 4),
         ]
-
+        row = data_fila + idx
+        alt_fill = PatternFill("solid", fgColor=GRIS) if idx % 2 == 0 else None
         for col, val in enumerate(datos, 1):
             cell = ws1.cell(row=row, column=col, value=val)
-            cell.font = f
+            cell.font = data_font
             cell.border = thin_border
             if alt_fill:
                 cell.fill = alt_fill
-            if isinstance(val, float) and col >= 27:  # overs (tras quitar KBB, corren 2 cols)
+            if isinstance(val, float) and col >= COL_OVERS:
                 cell.number_format = pct_fmt
                 colorear_overs(ws1, row, col, val)
             elif isinstance(val, float):
-                cell.number_format = dec_fmt if col not in (15,) else dec_fmt
-            if col in (21, 23):  # ML %
+                cell.number_format = dec_fmt
+            if col in COL_ML_PCT or col == 27:
                 cell.number_format = pct_fmt
-            if col in (22, 24):  # Momios
+            if col in COL_ML_MOM:
                 cell.alignment = Alignment(horizontal="center")
 
     # Anchos de columna
     anchos = [20, 20, 18, 18, 7, 7, 6, 6, 9, 9, 7, 7, 7, 7, 5,
-              7, 7, 7, 7, 8, 9, 9, 9, 9, 9, 9, 6, 6, 6, 6, 6, 6]
+              7, 7, 7, 7, 8, 9, 9, 9, 9, 9, 9, 7, 6, 6, 6, 6, 6, 6]
     for i, a in enumerate(anchos, 1):
         ws1.column_dimensions[get_column_letter(i)].width = a
     ws1.freeze_panes = ws1.cell(row=fila + 1, column=1)
 
     # Total slate
-    if len(modelables) > 0:
-        prom = total_slate / len(modelables)
-        fin_fila = data_fila + len(modelables)
+    if evaluados:
+        prom = sum(r['total_esp'] for r in evaluados) / len(evaluados)
+        fin_fila = data_fila + len(evaluados)
         ws1.merge_cells(f"A{fin_fila}:G{fin_fila}")
         cel = ws1.cell(row=fin_fila, column=1, value=f"📊 Promedio total del slate: {prom:.2f} carreras")
         cel.font = Font(name="Calibri", bold=True, italic=True, size=10)
@@ -217,125 +194,90 @@ def generar(fecha=None):
     ws2.sheet_properties.tabColor = "2E75B6"
 
     fila2 = 1
-    for idx, j in enumerate(modelables):
-        visita, casa = j["away_name"], j["home_name"]
-        p_v, p_c = j["away_probable_pitcher"], j["home_probable_pitcher"]
-
-        pv = m.datos_pitcher(p_v)
-        pc = m.datos_pitcher(p_c)
-        if pv is None or pc is None or pv["fip"] is None or pc["fip"] is None:
-            continue
-
-        fip_v = m.fip_blend(pv)
-        fip_c = m.fip_blend(pc)
-        ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
-        mano_v, mano_c = pv["mano"], pc["mano"]
-
-        rg_v = m.carreras_por_juego(visita, hoy)
-        rg_c = m.carreras_por_juego(casa, hoy)
-        park = m.PARK.get(casa, 1.00)
-        split_v = m.split_ofensivo(visita, mano_c)
-        split_c = m.split_ofensivo(casa, mano_v)
-
-        bp_v = m.bullpen_stats(visita)
-        bp_c = m.bullpen_stats(casa)
-
-        def_v = m.factor_defensivo(visita)
-        def_c = m.factor_defensivo(casa)
-
-        pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
-        pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
-
-        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
-        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
-
-        overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
-
-        pitcheo_c_f5 = m.fip_f5(fip_c, ip_c, bp_c["fip"])
-        pitcheo_v_f5 = m.fip_f5(fip_v, ip_v, bp_v["fip"])
-        lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * m.AJUSTE_BASE
-        lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * m.AJUSTE_BASE * m.HFA
-        overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = m.simular_f5(lam_v_f5, lam_c_f5)
+    for r in evaluados:
+        visita, casa, f5 = r["visita"], r["casa"], r["f5"]
+        overs, p_casa = r["overs"], r["p_casa"]
+        p_visita = r["p_visita"]
 
         # ── CABECERA DEL JUEGO ──
         ws2.merge_cells(f"A{fila2}:J{fila2}")
-        cell = ws2.cell(row=fila2, column=1, value=f"{visita} @ {casa}  |  {p_v} vs {p_c}")
+        cell = ws2.cell(row=fila2, column=1,
+                        value=f"{visita} @ {casa}  |  {r['abridor_v']} vs {r['abridor_c']}"
+                              + ("   ⚠ abridor sin stats: estimado" if r["estimado"] else ""))
         cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=12)
         cell.fill = PatternFill("solid", fgColor=AZUL)
         cell.alignment = Alignment(horizontal="left", vertical="center")
         ws2.row_dimensions[fila2].height = 28
         fila2 += 1
 
-        # Subencabezados
-        sub1 = ["Métrica", "Visitante", "Casa"]
-        escribir_encabezados(ws2, fila2, sub1, fill=PatternFill("solid", fgColor=AZUL_CLARO), font=subheader_font)
+        escribir_encabezados(ws2, fila2, ["Métrica", "Visitante", "Casa"],
+                             fill=PatternFill("solid", fgColor=AZUL_CLARO), font=subheader_font)
         fila2 += 1
 
         def par(fila, label, val_v, val_c, fmt_override=None):
-            cell_a = estilo_celda(ws2, fila, 1, label, font=bold_font)
-            cell_b = estilo_celda(ws2, fila, 2, val_v, fmt=fmt_override)
-            cell_c = estilo_celda(ws2, fila, 3, val_c, fmt=fmt_override)
+            celdas = [estilo_celda(ws2, fila, 1, label, font=bold_font),
+                      estilo_celda(ws2, fila, 2, val_v, fmt=fmt_override),
+                      estilo_celda(ws2, fila, 3, val_c, fmt=fmt_override)]
             if fila % 2 == 0:
-                for c in [cell_a, cell_b, cell_c]:
+                for c in celdas:
                     c.fill = fill_par
 
-        p_visita = 1 - p_casa
-        par(fila2, "FIP", round(fip_v, 2), round(fip_c, 2)); fila2 += 1
-        par(fila2, "IP Esperadas", round(ip_v, 1), round(ip_c, 1)); fila2 += 1
-        par(fila2, "Mano", mano_v or "?", mano_c or "?"); fila2 += 1
-        par(fila2, "Bullpen FIP", round(bp_v["fip"], 2), round(bp_c["fip"], 2)); fila2 += 1
-        par(fila2, "R/G (reciencia)", round(rg_v, 2), round(rg_c, 2)); fila2 += 1
-        par(fila2, "Split vs Mano", round(split_v, 3), round(split_c, 3)); fila2 += 1
-        par(fila2, "Factor DEF", round(def_v, 3), round(def_c, 3)); fila2 += 1
-        par(fila2, "Carreras Esperadas (λ)", round(lam_v, 2), round(lam_c, 2)); fila2 += 1
-        par(fila2, "Total Esperado", round(lam_v + lam_c, 2), "—"); fila2 += 1
-        par(fila2, "Park Factor", park, "—"); fila2 += 1
+        par(fila2, "FIP", round(r["fip_v"], 2), round(r["fip_c"], 2)); fila2 += 1
+        par(fila2, "IP Esperadas", round(r["ip_v"], 1), round(r["ip_c"], 1)); fila2 += 1
+        par(fila2, "Mano", r["mano_v"] or "?", r["mano_c"] or "?"); fila2 += 1
+        par(fila2, "Bullpen FIP", round(r["bp_v"]["fip"], 2), round(r["bp_c"]["fip"], 2)); fila2 += 1
+        par(fila2, "R/G (park-ajustada)", round(r["rg_v"], 2), round(r["rg_c"], 2)); fila2 += 1
+        par(fila2, "Split vs Mano", round(r["split_v"], 3), round(r["split_c"], 3)); fila2 += 1
+        par(fila2, "Factor DEF", round(r["def_v"], 3), round(r["def_c"], 3)); fila2 += 1
+        par(fila2, "Carreras Esperadas (λ)", round(r["lam_v"], 2), round(r["lam_c"], 2)); fila2 += 1
+        par(fila2, "Total Esperado", round(r["total_esp"], 2), "—"); fila2 += 1
+        par(fila2, "Park Factor", r["park"], "—"); fila2 += 1
         par(fila2, "Moneyline Prob", round(p_visita, 4), round(p_casa, 4), pct_fmt); fila2 += 1
         par(fila2, "Moneyline Momio", prob_a_momio(p_visita), prob_a_momio(p_casa)); fila2 += 1
-        par(fila2, "Run Line +1.5 / -1.5", round(1 - p_casa_rl, 4), round(p_casa_rl, 4), pct_fmt); fila2 += 1
-
+        par(fila2, "Run Line +1.5 / -1.5", round(r["p_visita_rl"], 4), round(r["p_casa_rl"], 4), pct_fmt); fila2 += 1
+        par(fila2, "Total del equipo O4.5", round(r["tt_visita"][4.5], 4), round(r["tt_casa"][4.5], 4), pct_fmt); fila2 += 1
         fila2 += 1
 
-        # Overs
-        ws2.cell(row=fila2, column=1, value="Probabilidades Overs").font = bold_font
-        escribir_encabezados(ws2, fila2, ["", "O5.5", "O6.5", "O7.5", "O8.5", "O9.5", "O10.5", "O11.5", "O12.5"],
-                          fill=PatternFill("solid", fgColor=AZUL_CLARO), font=subheader_font)
+        # Overs / Unders
+        LINEAS_XL = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
+        escribir_encabezados(ws2, fila2, [""] + [f"O{ln}" for ln in LINEAS_XL],
+                             fill=PatternFill("solid", fgColor=AZUL_CLARO), font=subheader_font)
         fila2 += 1
-        ovs = [overs[ln] for ln in [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]]
-        estilo_celda(ws2, fila2, 1, "Over", font=bold_font)
-        for ci, (ln, p) in enumerate([(ln, overs[ln]) for ln in [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]]):
-            cel = estilo_celda(ws2, fila2, ci + 2, round(p, 4), fmt=pct_fmt)
-            colorear_overs(ws2, fila2, ci + 2, p)
+        for etiqueta, transform in (("Over", lambda p: p), ("Under", lambda p: 1 - p)):
+            estilo_celda(ws2, fila2, 1, etiqueta, font=bold_font)
+            for ci, ln in enumerate(LINEAS_XL):
+                val = transform(overs[ln])
+                estilo_celda(ws2, fila2, ci + 2, round(val, 4), fmt=pct_fmt)
+                colorear_overs(ws2, fila2, ci + 2, val)
+            fila2 += 1
         fila2 += 1
-        estilo_celda(ws2, fila2, 1, "Under", font=bold_font)
-        for ci, (ln, p) in enumerate([(ln, overs[ln]) for ln in [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]]):
-            u = 1 - p
-            cel = estilo_celda(ws2, fila2, ci + 2, round(u, 4), fmt=pct_fmt)
-            colorear_overs(ws2, fila2, ci + 2, u)
-        fila2 += 2
 
-        # F5
-        ws2.cell(row=fila2, column=1, value="Primeras 5 Entradas (F5)").font = Font(name="Calibri", bold=True, color="2E75B6", size=11)
+        # F5 + NRFI
+        ws2.cell(row=fila2, column=1, value="Primeras 5 Entradas (F5) y 1ª entrada").font = Font(
+            name="Calibri", bold=True, color="2E75B6", size=11)
         fila2 += 1
-        sub_f5 = ["Métrica", "Valor"]
-        escribir_encabezados(ws2, fila2, sub_f5, fill=PatternFill("solid", fgColor=AZUL_CLARO), font=subheader_font)
+        escribir_encabezados(ws2, fila2, ["Métrica", "Valor"],
+                             fill=PatternFill("solid", fgColor=AZUL_CLARO), font=subheader_font)
         fila2 += 1
-        par_f5 = [
-            ("Carreras λ V", round(lam_v_f5, 2)),
-            ("Carreras λ C", round(lam_c_f5, 2)),
-            ("Total F5", round(lam_v_f5 + lam_c_f5, 2)),
-            ("ML Casa", f"{p_casa_f5:.1%} ({prob_a_momio(p_casa_f5)})"),
-            ("ML Visita", f"{p_visita_f5:.1%} ({prob_a_momio(p_visita_f5)})"),
-            ("Empate", f"{p_empate_f5:.1%} ({prob_a_momio(p_empate_f5)})"),
-            ("RL Casa -0.5", f"{p_casa_f5 + p_empate_f5:.1%}"),
-            ("RL Visita +0.5", f"{p_visita_f5 + p_empate_f5:.1%}"),
+        detalle = [
+            ("Carreras λ V (F5)", round(f5["lam_v"], 2)),
+            ("Carreras λ C (F5)", round(f5["lam_c"], 2)),
+            ("Total F5", round(f5["total_esp"], 2)),
+            ("ML F5 Casa", f"{f5['p_casa']:.1%} ({prob_a_momio(f5['p_casa'])})"),
+            ("ML F5 Visita", f"{f5['p_visita']:.1%} ({prob_a_momio(f5['p_visita'])})"),
+            ("ML F5 Empate", f"{f5['p_empate']:.1%} ({prob_a_momio(f5['p_empate'])})"),
+            ("RL F5 Casa +0.5", f"{f5['rl_casa']:.1%}"),
+            ("RL F5 Visita +0.5", f"{f5['rl_visita']:.1%}"),
+            ("Total F5 O4.5", f"{f5['overs'][4.5]:.1%}"),
+            ("NRFI (1ª sin carreras)", f"{r['nrfi']['nrfi']:.1%} ({prob_a_momio(r['nrfi']['nrfi'])})"),
+            ("YRFI", f"{r['nrfi']['yrfi']:.1%} ({prob_a_momio(r['nrfi']['yrfi'])})"),
         ]
-        for lbl, val in par_f5:
+        for lbl, val in detalle:
             estilo_celda(ws2, fila2, 1, lbl, font=bold_font)
             estilo_celda(ws2, fila2, 2, val)
             if fila2 % 2 == 0:
-                ws2.cell(row=fila2, column=1).fill = fill_par
-                ws2.cell(row=fila2, column=2).fill = fill_par
+                for c in (1, 2):
+                    ws2.cell(row=fila2, column=c).fill = fill_par
             fila2 += 1
         fila2 += 2
 
@@ -358,41 +300,18 @@ def generar(fecha=None):
 
     f3 = 5
     ods = m.valor.obtener_odds()
-    for j in modelables:
-        visita, casa = j["away_name"], j["home_name"]
-        p_v, p_c = j["away_probable_pitcher"], j["home_probable_pitcher"]
-        pv = m.datos_pitcher(p_v)
-        pc = m.datos_pitcher(p_c)
-        if pv is None or pc is None or pv["fip"] is None or pc["fip"] is None:
-            continue
-        fip_v = m.fip_blend(pv)
-        fip_c = m.fip_blend(pc)
-        ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
-        rg_v = m.carreras_por_juego(visita, hoy)
-        rg_c = m.carreras_por_juego(casa, hoy)
-        park = m.PARK.get(casa, 1.00)
-        split_v = m.split_ofensivo(visita, pc["mano"])
-        split_c = m.split_ofensivo(casa, pv["mano"])
-        bp_v = m.bullpen_stats(visita)
-        bp_c = m.bullpen_stats(casa)
-        def_v = m.factor_defensivo(visita)
-        def_c = m.factor_defensivo(casa)
-        pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
-        pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
-        lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
-        lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
-        overs, p_casa, p_casa_rl = m.simular(lam_v, lam_c)
-
-        jugadas = m.valor.analizar_juego(m.valor.buscar(ods, visita, casa), visita, casa, p_casa, overs)
+    for r in evaluados:
+        jugadas = m.valor.analizar_juego(m.valor.buscar(ods, r["visita"], r["casa"]),
+                                         r["visita"], r["casa"], r["p_casa"], r["overs"])
         for jg in jugadas:
-            estilo_celda(ws3, f3, 1, f"{visita} @ {casa}", font=data_font)
+            estilo_celda(ws3, f3, 1, f"{r['visita']} @ {r['casa']}", font=data_font)
             estilo_celda(ws3, f3, 2, jg["mercado"], font=data_font)
             estilo_celda(ws3, f3, 3, jg["pick"], font=bold_font)
             estilo_celda(ws3, f3, 4, round(jg["p_modelo"], 4), fmt=pct_fmt, font=data_font)
             mom = jg["momio"]
             estilo_celda(ws3, f3, 5, f"{mom:+d}" if mom > 0 else str(mom), font=data_font)
             estilo_celda(ws3, f3, 6, round(jg["ev"], 4), fmt=pct_fmt,
-                       fill=PatternFill("solid", fgColor=VERDE))
+                         fill=PatternFill("solid", fgColor=VERDE))
             estilo_celda(ws3, f3, 7, jg.get("libro", ""), font=data_font)
             f3 += 1
 
@@ -408,7 +327,7 @@ def generar(fecha=None):
     filename = f"exports/MLB_Predicciones_{hoy.replace('/', '-')}.xlsx"
     wb.save(filename)
     print(f"\n✅ Excel generado: {os.path.abspath(filename)}", flush=True)
-    print(f"   {len(modelables)} juegos modelados", flush=True)
+    print(f"   {len(evaluados)} juegos modelados", flush=True)
     print(f"   Abrelo en Excel para ver formato completo con colores", flush=True)
 
 if __name__ == "__main__":

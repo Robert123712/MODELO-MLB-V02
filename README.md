@@ -29,11 +29,13 @@ probables y pronóstico de hits por bateador.
 
 ## Estructura
 
-- `modelo_diario.py` — motor: analiza el slate completo, busca valor y registra predicciones
+- `modelo_diario.py` — motor: `evaluar_juego()` es la fuente única de la matemática del modelo
 - `app.py` + `templates/` — web app local (FastAPI): `python app.py` → http://127.0.0.1:8000
 - `generar_excel.py` — exporta el slate a Excel con formato (carpeta `exports/`)
 - `generar_json.py` — genera el snapshot JSON que alimenta la página pública
-- `analisis_comparacion.py` / `comparar_resultados.py` — backtesting contra resultados reales
+- `validar.py` — calibración sobre el histórico: Brier, log-loss, curva de calibración, MAE/bias
+- `analisis_comparacion.py` / `comparar_resultados.py` — backtesting de una fecha contra resultados reales
+- `sync_docs.py` — regenera `docs/index.html` desde `templates/index.html` (córrelo tras editar la interfaz)
 - `tracker.py` — diario de apuestas: registro, calificación automática y ROI
 - `valor.py` — módulo de detección de valor (+EV) contra líneas reales (The Odds API)
 - `predicciones.csv` — histórico de predicciones (se genera al correr)
@@ -63,9 +65,22 @@ and variables → Actions → `ODDS_API_KEY`).
 
 Python · NumPy · MLB-StatsAPI · The Odds API
 
+## Medir antes de mejorar
+
+```
+python validar.py            # todo el histórico acumulado
+python validar.py 07/01/2026 # desde una fecha
+```
+
+Reporta Brier score, log-loss y curva de calibración por mercado (moneyline,
+totales, F5, NRFI) más el MAE y el sesgo de los totales. La regla del proyecto es
+que **los parámetros de calibración se mueven con estos números, no a ojo**.
+
 ## Estado del proyecto
 
-En desarrollo activo. Próximo módulo: validador de calibración (compara predicciones históricas contra resultados reales para medir Brier score, log-loss, curva de calibración y ROI/CLV).
+En desarrollo activo. Siguiente: CLV (closing line value) en el tracker —
+comparar el momio tomado contra el de cierre es la señal más rápida de si hay
+ventaja real. Después: clima para totales y F5 conectado a la detección +EV.
 
 ## Autor
 

@@ -1,0 +1,114 @@
+---
+name: modelo-mlb
+description: Contexto y reglas del simulador Monte Carlo de MLB — arquitectura, tubería de cálculo, parámetros de calibración y los errores estadísticos en los que este proyecto ya cayó. Usar al tocar el modelo, agregar mercados, cambiar la calibración, trabajar la página web o el flujo de corridas automáticas.
+---
+
+# Modelo MLB — contexto del proyecto
+
+Simulador Monte Carlo que estima probabilidades de apuestas de béisbol y las
+compara contra el mercado. Corre solo todos los días vía GitHub Actions y
+publica en GitHub Pages.
+
+## Regla de oro
+
+**Toda la matemática vive en `modelo_diario.evaluar_juego()`.** Es la fuente
+única de verdad: `app.py`, `generar_excel.py`, `analisis_comparacion.py` y
+`correr()` solo dan formato a lo que esa función devuelve. Si un cambio de
+modelo te obliga a editar dos archivos, lo estás haciendo mal — la fórmula
+estuvo copiada 6 veces y eso ya causó un bug de variables cruzadas entre juegos.
+
+## Arquitectura
+
+| Archivo | Rol |
+|---|---|
+| `modelo_diario.py` | Motor: datos, `evaluar_juego()`, simulación, salida a consola y CSV |
+| `valor.py` | Detección +EV contra The Odds API (de-vig, línea de consenso) |
+| `app.py` | API FastAPI local; serializa `evaluar_juego()` a JSON |
+| `templates/index.html` | Dashboard interactivo (servido por `app.py`) |
+| `docs/index.html` | **Generado desde el template**; carga `docs/data/latest.json` para GitHub Pages |
+| `generar_json.py` | Escribe el snapshot que consume la página pública |
+| `generar_excel.py` | Exporta el slate a Excel (3 hojas) |
+| `validar.py` | Calibración del histórico: Brier, log-loss, curva, MAE/bias |
+| `analisis_comparacion.py` | Backtest juego por juego de una fecha |
+| `tracker.py` | Diario de apuestas: registro, calificación, ROI (`apuestas.csv` NO se versiona) |
+
+`docs/index.html` y `templates/index.html` comparten CSS y funciones de render;
+solo difieren en el arranque (fetch del snapshot vs POST a la API). Al cambiar
+la interfaz, edita el template y regenera `docs/` — si no, se desincronizan.
+
+## La tubería de cálculo
+
+```
+λ_visita = rg_v × split_v × mult_pitcheo(casa)   × def_casa   × park × base
+λ_casa   = rg_c × split_c × mult_pitcheo(visita) × def_visita × park × base × HFA
+```
+
+El cruce es intencional: **el pitcheo y la defensa de un equipo deprimen la
+ofensiva del otro**. HFA solo va del lado local.
+
+De ahí, 50,000 simulaciones con **binomial negativa** (no Poisson: las carreras
+de béisbol tienen varianza > media; una Poisson subestima los blowouts) generan
+ML, run line, totales, totales por equipo, marcadores y la distribución. F5 y
+NRFI usan la misma λ reescalada con su propia dispersión.
+
+## Parámetros de calibración (las perillas)
+
+| Constante | Valor | Qué hace |
+|---|---|---|
+| `AMORTIGUA` | 0.6 | Cuánto mueve el pitcheo la λ. Menor = más regresión a la media |
+| `DISPERSION_K` | 4.0 | Dispersión de la binomial negativa. Menor = más varianza |
+| `DISPERSION_K_F5` | 2.4 | Igual para F5 (menos entradas ⇒ más varianza relativa) |
+| `DISPERSION_K_INN` | 0.38 | Por entrada, calibrada a ~52% NRFI de liga |
+| `AJUSTE_BASE` | 0.94 | Nivel global; se ajusta para promediar ~8.5 carreras/slate |
+| `PESO_OFENSIVA_RECIENTE` | 0.45 | Mezcla reciencia/temporada de la ofensiva |
+| `SHRINK_IP` | 60 | IP de regresión del FIP hacia la liga |
+| `FIP_REEMPLAZO` | 4.80 | Abridor sin stats de temporada |
+
+**Nunca muevas una perilla "a ojo".** El camino correcto es correr `validar.py`
+sobre el histórico, ver el sesgo, y mover. `validar.py` ya sugiere ajustar
+`AJUSTE_BASE` cuando detecta bias consistente en totales.
+
+## Errores estadísticos en los que este proyecto ya cayó
+
+Sirven como lista de verificación antes de agregar cualquier factor:
+
+1. **Doble conteo.** Hubo un `factor_kbb` multiplicando la λ cuando el FIP *ya*
+   contiene K y BB en su fórmula, y un `factor_calibracion` que reaplicaba la
+   ponderación por reciencia que `carreras_por_juego` ya hacía. Ambos eliminados.
+   **Antes de agregar un factor, pregunta: ¿esta señal ya entra por otro lado?**
+2. **Muestras chicas sin encogimiento.** El FIP de 3 salidas (~15 IP) es casi
+   ruido. Todo estimador debe regresar hacia la media según su tamaño de muestra.
+3. **Contexto sin ajustar.** Las carreras crudas contaban Coors como talento
+   ofensivo. `carreras_por_juego` ahora divide entre el park de la sede.
+4. **Perseguir rachas.** La reciencia pura hacía que el ML lo decidiera quién
+   bateó bien esa semana, peleando contra el mercado por ruido propio.
+5. **Fallos silenciosos.** Un `except: pass` escondió durante semanas que los 30
+   bullpens tenían FIP idéntico (la API no expone `fip`; hay que calcularlo).
+   **Los fallos de datos deben avisar en consola, no tragarse.**
+
+## Convenciones
+
+- Código y comentarios **en español, sin acentos en el código** (la consola de
+  Windows del autor truena); los textos de la interfaz sí llevan acentos.
+- Nombres de variables del dominio: `lam_v`/`lam_c`, `rg`, `split`, `fip`, `p_casa`.
+- Datos personales fuera del repo: `apuestas.csv` y `banca.csv` están en `.gitignore`.
+- Caches en memoria por proceso (`cache_pitcher`, `cache_equipo`…); el RNG es
+  **por hilo** (`_rng()`) porque `app.py` simula en paralelo.
+- Al agregar columnas a `predicciones.csv`, actualiza `CABECERA` en `correr()`:
+  el código reescribe la cabecera vieja para no desalinear el histórico.
+
+## Flujo de corridas automáticas
+
+`.github/workflows/modelo-diario.yml` corre diario ~16:30 UTC: ejecuta el
+modelo, acumula `predicciones.csv`, genera `docs/data/latest.json` y commitea a
+`main`. Se dispara a mano desde Actions. El secret opcional `ODDS_API_KEY`
+activa la detección +EV.
+
+## Verificación
+
+No hay suite de tests. Antes de dar por bueno un cambio del modelo:
+1. `python -m py_compile *.py`
+2. Prueba con casos sintéticos (mockea `cache_pitcher`/`cache_equipo` y llama
+   `evaluar_juego`) — comprueba que las probabilidades sumen 1 y que un cambio
+   de input mueva la salida en la dirección esperada.
+3. `python validar.py` si el cambio afecta la calibración.
