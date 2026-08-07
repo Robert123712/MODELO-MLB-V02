@@ -49,125 +49,62 @@ def api_simular(req: SimularRequest):
             )
 
 def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
-    visita, casa = j["away_name"], j["home_name"]
-    p_v, p_c = j["away_probable_pitcher"], j["home_probable_pitcher"]
-
-    pv = m.datos_pitcher(p_v)
-    pc = m.datos_pitcher(p_c)
-    if pv is None or pc is None or pv["fip"] is None or pc["fip"] is None:
+    """Evalua un juego y lo serializa a JSON para la web. Toda la matematica
+    vive en modelo_diario.evaluar_juego(): aqui solo se da formato."""
+    r = m.evaluar_juego(j, hoy, _frac_f5, con_bateo=True)
+    if r is None:
         return None
 
-    fip_v = m.fip_blend(pv)
-    fip_c = m.fip_blend(pc)
-    ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
-    mano_v, mano_c = pv["mano"], pc["mano"]
+    pv, pc, f5 = r["pv"], r["pc"], r["f5"]
+    jugadas = v.analizar_juego(v.buscar(odds_slate, r["visita"], r["casa"]),
+                               r["visita"], r["casa"], r["p_casa"], r["overs"])
 
-    rg_v = m.carreras_por_juego(visita, hoy)
-    rg_c = m.carreras_por_juego(casa, hoy)
-    park = m.PARK.get(casa, 1.00)
-
-    split_v = m.split_ofensivo(visita, mano_c)
-    split_c = m.split_ofensivo(casa, mano_v)
-
-    bp_v = m.bullpen_stats(visita)
-    bp_c = m.bullpen_stats(casa)
-
-    def_v = m.factor_defensivo(visita)
-    def_c = m.factor_defensivo(casa)
-
-    pitcheo_c = m.fip_combinado(fip_c, ip_c, bp_c["fip"])
-    pitcheo_v = m.fip_combinado(fip_v, ip_v, bp_v["fip"])
-
-    lam_v = rg_v * split_v * m.multiplicador_pitcheo(pitcheo_c) * def_c * park * m.AJUSTE_BASE
-    lam_c = rg_c * split_c * m.multiplicador_pitcheo(pitcheo_v) * def_v * park * m.AJUSTE_BASE * m.HFA
-
-    sim = m.simular_completo(lam_v, lam_c)
-    overs, p_casa, p_casa_rl = sim["overs"], sim["p_casa"], sim["p_casa_rl"]
-
-    pitcheo_c_f5 = m.fip_f5(fip_c, ip_c, bp_c["fip"])
-    pitcheo_v_f5 = m.fip_f5(fip_v, ip_v, bp_v["fip"])
-    lam_v_f5 = rg_v * split_v * _frac_f5 * m.multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * m.AJUSTE_BASE
-    lam_c_f5 = rg_c * split_c * _frac_f5 * m.multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * m.AJUSTE_BASE * m.HFA
-    overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = m.simular_f5(lam_v_f5, lam_c_f5)
-    rl_casa_f5 = p_casa_f5 + p_empate_f5
-    rl_visita_f5 = p_visita_f5 + p_empate_f5
-
-    # NRFI/YRFI: 1ra entrada, lanza solo el abridor
-    l1_v = m.lambda_inning1(rg_v, split_v, m.multiplicador_pitcheo(fip_c), def_c, park)
-    l1_c = m.lambda_inning1(rg_c, split_c, m.multiplicador_pitcheo(fip_v), def_v, park, m.HFA)
-    nrfi = m.prob_nrfi(l1_v, l1_c)
-
-    jugadas = v.analizar_juego(v.buscar(odds_slate, visita, casa), visita, casa, p_casa, overs)
-
-    bateo = m.predecir_hits_juego(visita, casa, j.get("game_id"), pv, pc, park, split_v, split_c)
+    def _r(x, n=2):
+        return round(x, n) if x is not None else None
 
     juego_dict = {
-        "visita": visita,
-        "casa": casa,
-        "abridor_v": p_v,
-        "abridor_c": p_c,
-        "fip_v": round(pv["fip"], 2) if pv["fip"] is not None else None,
-        "fip_c": round(pc["fip"], 2) if pc["fip"] is not None else None,
-        "fip_v_reciente": round(pv["fip_reciente"], 2) if pv.get("fip_reciente") else None,
-        "fip_c_reciente": round(pc["fip_reciente"], 2) if pc.get("fip_reciente") else None,
-        "ip_v": round(ip_v, 1) if ip_v is not None else None,
-        "ip_c": round(ip_c, 1) if ip_c is not None else None,
-        "mano_v": mano_v,
-        "mano_c": mano_c,
-        "k9_v": round(pv["k9"], 1) if pv["k9"] else None,
-        "k9_c": round(pc["k9"], 1) if pc["k9"] else None,
-        "bb9_v": round(pv["bb9"], 1) if pv["bb9"] else None,
-        "bb9_c": round(pc["bb9"], 1) if pc["bb9"] else None,
-        "bullpen_v": round(bp_v["fip"], 2),
-        "bullpen_c": round(bp_c["fip"], 2),
-        "bp_k9_v": round(bp_v["k9"], 1),
-        "bp_k9_c": round(bp_c["k9"], 1),
-        "rg_v": round(rg_v, 2),
-        "rg_c": round(rg_c, 2),
-        "split_v": round(split_v, 3),
-        "split_c": round(split_c, 3),
-        "park": park,
-        "def_c": round(def_c, 3),
-        "def_v": round(def_v, 3),
-        "lam_v": round(lam_v, 2),
-        "lam_c": round(lam_c, 2),
-        "p_casa": round(p_casa, 4),
-        "p_visita": round(1 - p_casa, 4),
-        "p_casa_rl": round(p_casa_rl, 4),
-        "p_visita_rl": round(1 - p_casa_rl, 4),
-        "overs": {str(k): round(val, 4) for k, val in overs.items()},
-        "tt_visita": {str(k): round(val, 4) for k, val in sim["tt_visita"].items()},
-        "tt_casa": {str(k): round(val, 4) for k, val in sim["tt_casa"].items()},
+        "visita": r["visita"], "casa": r["casa"],
+        "abridor_v": r["abridor_v"], "abridor_c": r["abridor_c"],
+        "fip_v": _r(r["fip_v"]), "fip_c": _r(r["fip_c"]),
+        "fip_v_reciente": _r(pv.get("fip_reciente")), "fip_c_reciente": _r(pc.get("fip_reciente")),
+        "ip_v": _r(r["ip_v"], 1), "ip_c": _r(r["ip_c"], 1),
+        "mano_v": r["mano_v"], "mano_c": r["mano_c"],
+        "k9_v": _r(pv.get("k9"), 1), "k9_c": _r(pc.get("k9"), 1),
+        "bb9_v": _r(pv.get("bb9"), 1), "bb9_c": _r(pc.get("bb9"), 1),
+        "bullpen_v": _r(r["bp_v"]["fip"]), "bullpen_c": _r(r["bp_c"]["fip"]),
+        "bp_k9_v": _r(r["bp_v"]["k9"], 1), "bp_k9_c": _r(r["bp_c"]["k9"], 1),
+        "rg_v": _r(r["rg_v"]), "rg_c": _r(r["rg_c"]),
+        "split_v": _r(r["split_v"], 3), "split_c": _r(r["split_c"], 3),
+        "park": r["park"],
+        "def_v": _r(r["def_v"], 3), "def_c": _r(r["def_c"], 3),
+        "lam_v": _r(r["lam_v"]), "lam_c": _r(r["lam_c"]),
+        "p_casa": _r(r["p_casa"], 4), "p_visita": _r(r["p_visita"], 4),
+        "p_casa_rl": _r(r["p_casa_rl"], 4), "p_visita_rl": _r(r["p_visita_rl"], 4),
+        "overs": {str(k): round(val, 4) for k, val in r["overs"].items()},
+        "tt_visita": {str(k): round(val, 4) for k, val in r["tt_visita"].items()},
+        "tt_casa": {str(k): round(val, 4) for k, val in r["tt_casa"].items()},
         "marcadores": [{"casa": mc["casa"], "visita": mc["visita"], "p": round(mc["p"], 4)}
-                       for mc in sim["marcadores"]],
-        "nrfi": {k: round(val, 4) for k, val in nrfi.items()},
+                       for mc in r["marcadores"]],
+        "dist_total": [round(float(x), 5) for x in r["dist_total"]],
+        "nrfi": {k: round(val, 4) for k, val in r["nrfi"].items()},
+        "estimado": r["estimado"],
+        "estimado_v": r["estimado_v"], "estimado_c": r["estimado_c"],
         "f5": {
-            "lam_v": round(lam_v_f5, 2),
-            "lam_c": round(lam_c_f5, 2),
-            "p_casa": round(p_casa_f5, 4),
-            "p_visita": round(p_visita_f5, 4),
-            "p_empate": round(p_empate_f5, 4),
-            "rl_casa": round(rl_casa_f5, 4),
-            "rl_visita": round(rl_visita_f5, 4),
-            "overs": {str(k): round(val, 4) for k, val in overs_f5.items()},
+            "lam_v": _r(f5["lam_v"]), "lam_c": _r(f5["lam_c"]),
+            "p_casa": _r(f5["p_casa"], 4), "p_visita": _r(f5["p_visita"], 4),
+            "p_empate": _r(f5["p_empate"], 4),
+            "rl_casa": _r(f5["rl_casa"], 4), "rl_visita": _r(f5["rl_visita"], 4),
+            "overs": {str(k): round(val, 4) for k, val in f5["overs"].items()},
         },
         "jugadas_valor": [
-            {
-                "mercado": jg["mercado"],
-                "pick": jg["pick"],
-                "linea": jg.get("linea", ""),
-                "p_modelo": round(jg["p_modelo"], 4),
-                "p_mercado": round(jg["p_mercado"], 4),
-                "momio": jg["momio"],
-                "ev": round(jg["ev"], 4),
-                "libro": jg.get("libro", ""),
-            }
+            {"mercado": jg["mercado"], "pick": jg["pick"], "linea": jg.get("linea", ""),
+             "p_modelo": round(jg["p_modelo"], 4), "p_mercado": round(jg["p_mercado"], 4),
+             "momio": jg["momio"], "ev": round(jg["ev"], 4), "libro": jg.get("libro", "")}
             for jg in jugadas
         ],
-        "bateo": bateo,
+        "bateo": r.get("bateo"),
     }
-    
-    return juego_dict, lam_v + lam_c, len(jugadas)
+    return juego_dict, r["total_esp"], len(jugadas)
 
 def _ejecutar_simulacion(req: SimularRequest):
     hoy = req.fecha or date.today().strftime("%m/%d/%Y")

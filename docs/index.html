@@ -122,6 +122,23 @@
     .hl-note { font-size: 11px; color: var(--accent); font-weight: 600; }
 
     /* marcadores */
+    /* distribucion simulada */
+    .dist { width: 100%; height: auto; display: block; overflow: visible; }
+    .dist .bar-under { fill: var(--ink-3); }
+    .dist .bar-over  { fill: var(--accent); }
+    .dist .axis { fill: var(--ink-3); font-size: 9px; font-family: 'Inter', sans-serif; }
+    .dist .linea { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .dist .linea-lbl { fill: var(--ink); font-size: 9.5px; font-weight: 700; font-family: 'Inter', sans-serif; }
+    .dist-leyenda { display: flex; gap: 14px; font-size: 11.5px; color: var(--ink-2); margin-top: 6px; }
+    .dist-leyenda i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+
+    /* aviso de dato estimado */
+    .aviso {
+      display: inline-block; font-size: 11px; font-weight: 600; color: #e0a93e;
+      background: rgba(224,169,62,.12); border: 1px solid rgba(224,169,62,.3);
+      border-radius: 6px; padding: 2px 8px; margin-top: 6px;
+    }
+
     .scores { display: flex; flex-wrap: wrap; gap: 8px; }
     .score {
       background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px;
@@ -213,7 +230,7 @@
     <div id="empty-state" class="empty hidden">
       <div class="big">📋</div>
       <p>Aún no hay una corrida publicada</p>
-      <p style="color:var(--ink-3); font-size:13px; margin-top:4px;">La primera corrida automática del modelo aparecerá aquí (o dispárala a mano desde la pestaña Actions del repo)</p>
+      <p style="color:var(--ink-3); font-size:13px; margin-top:4px;">La primera corrida automática aparecerá aquí (o dispárala desde la pestaña Actions del repo)</p>
     </div>
 
     <div id="error" class="error hidden"></div>
@@ -234,18 +251,29 @@ function setStatus(cls, txt) { statusInd.innerHTML = `<span class="dot ${cls}"><
 async function cargar() {
   skeleton.classList.remove('hidden');
   setStatus('run', 'Cargando…');
+  let data;
   try {
     const res = await fetch('data/latest.json', { cache: 'no-store' });
     if (!res.ok) throw new Error('sin datos');
-    const data = await res.json();
+    data = await res.json();
+  } catch (err) {
+    snapshotInfo.textContent = 'Sin datos todavía';
+    emptyState.classList.remove('hidden');
+    setStatus('err', 'Sin corrida');
+    skeleton.classList.add('hidden');
+    return;
+  }
+  // El render va fuera del try de la descarga: si algo truena aqui es un bug de
+  // la pagina, no falta de datos, y hay que verlo en vez de decir "sin corrida".
+  try {
     const gen = data.generado_en ? new Date(data.generado_en) : null;
     snapshotInfo.textContent = `Slate del ${data.fecha}` +
       (gen ? ` · generado ${gen.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}` : '');
     renderResultados(data);
   } catch (err) {
-    snapshotInfo.textContent = 'Sin datos todavía';
-    emptyState.classList.remove('hidden');
-    setStatus('err', 'Sin corrida');
+    errorDiv.textContent = '⚠ Error al dibujar los resultados: ' + err.message;
+    errorDiv.classList.remove('hidden');
+    setStatus('err', 'Error');
   } finally {
     skeleton.classList.add('hidden');
   }
@@ -260,6 +288,51 @@ function momio(p) {
   return '+' + String(Math.round(100 * (1 - p) / p));
 }
 const fx = (v, n=2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(n);
+
+/* Histograma de la distribución simulada del total.
+   Es la salida cruda del Monte Carlo: las tablas dan probabilidades puntuales,
+   esto muestra la FORMA — el pico, la asimetría y la cola derecha que
+   justifican usar binomial negativa en vez de Poisson. */
+function histograma(dist, linea) {
+  if (!dist || !dist.length) return '';
+  const W = 320, H = 96, PAD_B = 16, PAD_T = 6;
+  const n = dist.length;
+  const bw = W / n;
+  const maxP = Math.max(...dist);
+  const escala = p => (p / maxP) * (H - PAD_B - PAD_T);
+
+  const barras = dist.map((p, k) => {
+    const h = escala(p);
+    // over = el total supera la línea; under = queda por debajo
+    const clase = k > linea ? 'bar-over' : 'bar-under';
+    const x = k * bw;
+    const y = H - PAD_B - h;
+    return `<rect class="${clase}" x="${(x + 0.6).toFixed(1)}" y="${y.toFixed(1)}"
+      width="${(bw - 1.2).toFixed(1)}" height="${Math.max(h, 0.6).toFixed(1)}" rx="1.5">
+      <title>${k}${k === n - 1 ? '+' : ''} carreras — ${pct(p)}</title></rect>`;
+  }).join('');
+
+  // marcas del eje solo cada 5 carreras: más números serían ruido
+  const ticks = dist.map((_, k) => k).filter(k => k % 5 === 0).map(k =>
+    `<text class="axis" x="${(k * bw + bw / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle">${k}</text>`
+  ).join('');
+
+  const xLinea = (linea + 1) * bw;
+  const marca = `
+    <line class="linea" x1="${xLinea.toFixed(1)}" y1="${PAD_T - 4}" x2="${xLinea.toFixed(1)}" y2="${H - PAD_B}"/>
+    <text class="linea-lbl" x="${(xLinea + 4).toFixed(1)}" y="${PAD_T + 3}">${linea}</text>`;
+
+  const pOver = dist.reduce((s, p, k) => s + (k > linea ? p : 0), 0);
+  return `
+    <svg class="dist" viewBox="0 0 ${W} ${H}" role="img"
+         aria-label="Distribución de carreras totales simuladas; línea en ${linea}">
+      ${barras}${ticks}${marca}
+    </svg>
+    <div class="dist-leyenda">
+      <span><i style="background:var(--accent)"></i>Over ${linea} · ${pct(pOver)}</span>
+      <span><i style="background:var(--ink-3)"></i>Under · ${pct(1 - pOver)}</span>
+    </div>`;
+}
 
 /* fila: etiqueta | prob | momio justo (fav = énfasis) */
 const filaPM = (lbl, p, fav) =>
@@ -323,6 +396,9 @@ function cardJuego(g) {
   /* --- marcadores más probables --- */
   const scoresHTML = (g.marcadores || []).map(mc => `
     <div class="score"><div class="sc">${mc.visita}–${mc.casa}</div><div class="pr">${pct(mc.p)}</div></div>`).join('');
+
+  /* --- distribución de las 50,000 simulaciones --- */
+  const distHTML = histograma(g.dist_total, parseFloat(cercana));
 
   /* --- F5 --- */
   const f = g.f5;
@@ -407,6 +483,9 @@ function cardJuego(g) {
         <p class="pitcher">${g.abridor_c} · ${g.mano_c ?? '?'}</p>
         <p class="pitmeta">FIP ${fx(g.fip_c)}${g.fip_c_reciente ? ` (rec ${fx(g.fip_c_reciente)})` : ''} · ${fx(g.ip_c,1)} IP · bullpen ${fx(g.bullpen_c)}</p>
       </div>
+      ${g.estimado ? `<div style="grid-column:1/-1"><span class="aviso">⚠ ${
+        [g.estimado_v ? g.abridor_v : null, g.estimado_c ? g.abridor_c : null].filter(Boolean).join(' y ')
+      } sin estadísticas de temporada — estimado a nivel de reemplazo</span></div>` : ''}
     </div>
 
     <div class="card-body">
@@ -455,6 +534,11 @@ function cardJuego(g) {
           <section class="block">
             <h4>Marcadores más probables <span class="note">(visita–casa)</span></h4>
             <div class="scores">${scoresHTML}</div>
+          </section>
+
+          <section class="block">
+            <h4>Distribución simulada <span class="note">(50,000 juegos)</span></h4>
+            ${distHTML}
           </section>
         </div>
       </div>

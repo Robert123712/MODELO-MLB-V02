@@ -51,6 +51,13 @@ SPLIT_TOPE = 0.15    # +/-15% maximo que el split L/R puede mover una ofensiva
 PESO_FIP_RECIENTE = 0.35  # peso MAXIMO del FIP reciente; se escala por las IP que traiga
 SHRINK_IP = 60       # IP de regresion: el FIP de temporada se encoge hacia la liga segun muestra
 SHRINK_IP_REC = 20   # IP a las que el FIP reciente gana la mitad de su peso maximo
+
+# --- NIVEL DE REEMPLAZO (abridor sin stats de la temporada) ---
+# Peor que la liga (4.15) a proposito: quien no tiene historial reciente en MLB
+# —debutante, regreso de lesion, subida de ligas menores— rinde por debajo del
+# promedio. Sale temprano por limite de pitcheos, de ahi las IP bajas.
+FIP_REEMPLAZO = 4.80
+IP_REEMPLAZO = 4.5
 LIGA_K9 = 8.80       # ponches por 9 innings (promedio MLB 2025-26)
 LIGA_BB9 = 3.20      # bases por bolas por 9 innings
 
@@ -233,6 +240,11 @@ def fip_blend(p):
     if p is None or p["fip"] is None:
         return LIGA_FIP
     ip = p.get("ip_temp") or 0.0
+    if ip <= 0:
+        # Sin innings en la temporada: el FIP que traiga YA es una estimacion
+        # (nivel de reemplazo), no una medicion. Encogerlo lo devolveria a la
+        # media de liga y borraria justo la penalizacion que queremos aplicar.
+        return p["fip"]
     fip_temp = (p["fip"] * ip + LIGA_FIP * SHRINK_IP) / (ip + SHRINK_IP)
     if p.get("fip_reciente") is None:
         return fip_temp
@@ -685,6 +697,7 @@ def simular_binom_neg(lam, n, k=DISPERSION_K):
 
 LINEAS_TT = [2.5, 3.5, 4.5, 5.5]   # totales por equipo (team totals)
 N_MARCADORES = 5                    # top de marcadores mas probables
+TOPE_DIST = 20                      # ultimo bin de la distribucion del total (agrupa '20 o mas')
 
 # --- NRFI / YRFI (primera entrada) ---
 FACTOR_INN1 = 1.12       # la 1ra entrada anota ~10-15% mas que la entrada promedio:
@@ -731,6 +744,13 @@ def simular_completo(lam_v, lam_c):
     marcadores = [{"casa": int(vals[i] // 1000), "visita": int(vals[i] % 1000),
                    "p": counts[i] / N_SIMS} for i in top]
 
+    # Distribucion del total: es LA salida del Monte Carlo y sin ella la
+    # interfaz solo ve probabilidades puntuales, perdiendo la forma (asimetria
+    # y cola derecha) que justifica usar binomial negativa en vez de Poisson.
+    tope = TOPE_DIST
+    recortado = np.minimum(tot, tope)
+    dist = np.bincount(recortado, minlength=tope + 1) / N_SIMS
+
     return {
         "overs": overs,
         "p_casa": gana_c.mean(),
@@ -738,6 +758,7 @@ def simular_completo(lam_v, lam_c):
         "tt_visita": tt_v,
         "tt_casa": tt_c,
         "marcadores": marcadores,
+        "dist_total": dist,          # dist_total[k] = P(total == k); el ultimo bin es "k o mas"
     }
 
 def simular(lam_v, lam_c):
@@ -814,6 +835,117 @@ def predecir_hits_juego(visita, casa, game_id, pitcher_v, pitcher_c, park_factor
             })
     return resultado
 
+# ---------------- EVALUACION DE UN JUEGO (fuente unica de verdad) ----------------
+# Antes esta tuberia estaba copiada en modelo_diario.correr(), app.py,
+# generar_excel.py (x3) y analisis_comparacion.py: 6 copias de la misma formula.
+# Cualquier cambio de modelo habia que replicarlo 6 veces y ya provoco un bug de
+# variables cruzadas. Ahora todos los consumidores llaman aqui.
+
+def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
+    """Evalua un juego completo del schedule y devuelve TODO lo que el modelo sabe.
+
+    Devuelve un dict con inputs (abridores, bullpens, ofensivas), lambdas,
+    probabilidades de cada mercado (ML, RL, totales, totales por equipo,
+    marcadores, F5, NRFI) y banderas de calidad de datos. None si el juego
+    no trae abridores anunciados.
+    """
+    visita, casa = juego["away_name"], juego["home_name"]
+    nombre_v, nombre_c = juego.get("away_probable_pitcher"), juego.get("home_probable_pitcher")
+    if not nombre_v or not nombre_c:
+        return None
+    if frac_f5 is None:
+        frac_f5 = f5_frac_liga(hoy)
+
+    pv = datos_pitcher(nombre_v) or {}
+    pc = datos_pitcher(nombre_c) or {}
+
+    # Nivel de reemplazo: un abridor sin stats de la temporada (regresa de lesion,
+    # debuta, lo suben de ligas menores) ya no tumba el juego entero. Se le asigna
+    # un perfil de reemplazo y el juego se marca como estimado.
+    est_v = pv.get("fip") is None
+    est_c = pc.get("fip") is None
+    pv = _perfil_reemplazo(pv) if est_v else pv
+    pc = _perfil_reemplazo(pc) if est_c else pc
+
+    fip_v, fip_c = fip_blend(pv), fip_blend(pc)
+    ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
+    mano_v, mano_c = pv.get("mano"), pc.get("mano")
+
+    rg_v = carreras_por_juego(visita, hoy)
+    rg_c = carreras_por_juego(casa, hoy)
+    park = PARK.get(casa, 1.00)
+    split_v = split_ofensivo(visita, mano_c)   # la ofensiva visitante vs la mano del abridor local
+    split_c = split_ofensivo(casa, mano_v)
+    bp_v, bp_c = bullpen_stats(visita), bullpen_stats(casa)
+    def_v, def_c = factor_defensivo(visita), factor_defensivo(casa)
+
+    # El pitcheo/defensa de un equipo deprime la ofensiva del OTRO
+    pitcheo_c = fip_combinado(fip_c, ip_c, bp_c["fip"])
+    pitcheo_v = fip_combinado(fip_v, ip_v, bp_v["fip"])
+    lam_v = rg_v * split_v * multiplicador_pitcheo(pitcheo_c) * def_c * park * AJUSTE_BASE
+    lam_c = rg_c * split_c * multiplicador_pitcheo(pitcheo_v) * def_v * park * AJUSTE_BASE * HFA
+
+    sim = simular_completo(lam_v, lam_c)
+
+    # F5: mismos factores, pero el abridor domina y la ofensiva se escala
+    pitcheo_c_f5 = fip_f5(fip_c, ip_c, bp_c["fip"])
+    pitcheo_v_f5 = fip_f5(fip_v, ip_v, bp_v["fip"])
+    lam_v_f5 = rg_v * split_v * frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * AJUSTE_BASE
+    lam_c_f5 = rg_c * split_c * frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * AJUSTE_BASE * HFA
+    overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
+
+    # NRFI/YRFI: 1ra entrada, solo el abridor (el bullpen no participa)
+    l1_v = lambda_inning1(rg_v, split_v, multiplicador_pitcheo(fip_c), def_c, park)
+    l1_c = lambda_inning1(rg_c, split_c, multiplicador_pitcheo(fip_v), def_v, park, HFA)
+
+    r = {
+        "visita": visita, "casa": casa,
+        "abridor_v": nombre_v, "abridor_c": nombre_c,
+        "pv": pv, "pc": pc,
+        "fip_v": fip_v, "fip_c": fip_c, "ip_v": ip_v, "ip_c": ip_c,
+        "mano_v": mano_v, "mano_c": mano_c,
+        "bp_v": bp_v, "bp_c": bp_c,
+        "rg_v": rg_v, "rg_c": rg_c, "split_v": split_v, "split_c": split_c,
+        "park": park, "def_v": def_v, "def_c": def_c,
+        "lam_v": lam_v, "lam_c": lam_c, "total_esp": lam_v + lam_c,
+        "overs": sim["overs"], "p_casa": sim["p_casa"], "p_visita": 1 - sim["p_casa"],
+        "p_casa_rl": sim["p_casa_rl"], "p_visita_rl": 1 - sim["p_casa_rl"],
+        "tt_visita": sim["tt_visita"], "tt_casa": sim["tt_casa"],
+        "marcadores": sim["marcadores"],
+        "dist_total": sim["dist_total"],
+        "f5": {
+            "lam_v": lam_v_f5, "lam_c": lam_c_f5, "total_esp": lam_v_f5 + lam_c_f5,
+            "overs": overs_f5, "p_casa": p_casa_f5, "p_visita": p_visita_f5,
+            "p_empate": p_empate_f5,
+            "rl_casa": p_casa_f5 + p_empate_f5, "rl_visita": p_visita_f5 + p_empate_f5,
+        },
+        "nrfi": prob_nrfi(l1_v, l1_c),
+        # banderas de calidad: que tanto confiar en esta prediccion
+        "estimado_v": est_v, "estimado_c": est_c, "estimado": est_v or est_c,
+    }
+    if con_bateo:
+        r["bateo"] = predecir_hits_juego(visita, casa, juego.get("game_id"),
+                                         pv, pc, park, split_v, split_c)
+    return r
+
+
+def _perfil_reemplazo(p):
+    """Perfil de un abridor sin stats de temporada (regresa de lesion, debutante).
+    FIP de reemplazo peor que la liga: quien no tiene historial reciente rinde
+    por debajo del promedio, y suele salir temprano por limite de pitcheos."""
+    base = dict(p or {})
+    base.update({
+        "fip": FIP_REEMPLAZO, "fip_reciente": None,
+        "ip_temp": 0.0, "ip_reciente": 0.0,
+        "ip_esp": IP_REEMPLAZO,
+        "k9": base.get("k9") or LIGA_K9,
+        "bb9": base.get("bb9") or LIGA_BB9,
+        "baa": base.get("baa"),
+        "mano": base.get("mano"),
+    })
+    return base
+
+
 # ---------------- PROCESO PRINCIPAL ----------------
 
 def correr(fecha=None):
@@ -822,6 +954,7 @@ def correr(fecha=None):
     juegos = statsapi.schedule(date=hoy)
     modelables = [j for j in juegos if j["status"] in ("Scheduled", "Pre-Game", "Warmup")
                   and j["away_probable_pitcher"] and j["home_probable_pitcher"]]
+
 
     odds_slate = valor.obtener_odds()  # #2: {} si no hay ODDS_API_KEY
     _frac_f5 = f5_frac_liga(hoy)       # fraccion real de carreras en primeras 5 entradas
@@ -836,94 +969,63 @@ def correr(fecha=None):
     jugadas_valor = []
 
     for j in modelables:
-        visita, casa = j["away_name"], j["home_name"]
-        p_v, p_c = j["away_probable_pitcher"], j["home_probable_pitcher"]
-        print(f"--- {visita} @ {casa} ---")
-        print(f"Abridores: {p_v} vs {p_c}")
-
-        pv = datos_pitcher(p_v)
-        pc = datos_pitcher(p_c)
-        if pv is None or pc is None or pv["fip"] is None or pc["fip"] is None:
-            print("⚠ Sin datos — juego omitido\n")
+        r = evaluar_juego(j, hoy, _frac_f5)
+        if r is None:
             continue
+        visita, casa = r["visita"], r["casa"]
+        f5 = r["f5"]
+        overs, overs_f5, nrfi = r["overs"], f5["overs"], r["nrfi"]
 
-        fip_v = fip_blend(pv)
-        fip_c = fip_blend(pc)
-        ip_v, ip_c = pv["ip_esp"], pc["ip_esp"]
-        mano_v, mano_c = pv["mano"], pc["mano"]
+        print(f"--- {visita} @ {casa} ---")
+        print(f"Abridores: {r['abridor_v']} vs {r['abridor_c']}")
+        if r["estimado"]:
+            faltantes = [n for n, e in ((r['abridor_v'], r['estimado_v']),
+                                        (r['abridor_c'], r['estimado_c'])) if e]
+            print(f"⚠ Sin stats de {TEMPORADA}: {', '.join(faltantes)} — estimado a nivel de reemplazo")
 
-        rg_v = carreras_por_juego(visita, hoy)
-        rg_c = carreras_por_juego(casa, hoy)
-        park = PARK.get(casa, 1.00)
+        totales_slate.append(r["total_esp"])
 
-        split_v = split_ofensivo(visita, mano_c)
-        split_c = split_ofensivo(casa, mano_v)
-
-        bp_v = bullpen_stats(visita)
-        bp_c = bullpen_stats(casa)
-
-        def_v = factor_defensivo(visita)     # defensa de VISITA -> afecta a CASA
-        def_c = factor_defensivo(casa)       # defensa de CASA -> afecta a VISITA
-
-        pitcheo_c = fip_combinado(fip_c, ip_c, bp_c["fip"])
-        pitcheo_v = fip_combinado(fip_v, ip_v, bp_v["fip"])
-
-        lam_v = rg_v * split_v * multiplicador_pitcheo(pitcheo_c) * def_c * park * AJUSTE_BASE
-        lam_c = rg_c * split_c * multiplicador_pitcheo(pitcheo_v) * def_v * park * AJUSTE_BASE * HFA
-
-        overs, p_casa, p_casa_rl = simular(lam_v, lam_c)
-        totales_slate.append(lam_v + lam_c)
-
-        pitcheo_c_f5 = fip_f5(fip_c, ip_c, bp_c["fip"])
-        pitcheo_v_f5 = fip_f5(fip_v, ip_v, bp_v["fip"])
-        lam_v_f5 = rg_v * split_v * _frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * AJUSTE_BASE
-        lam_c_f5 = rg_c * split_c * _frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * AJUSTE_BASE * HFA
-        overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
-        rl_casa_f5 = p_casa_f5 + p_empate_f5
-        rl_visita_f5 = p_visita_f5 + p_empate_f5
-
-        print(f"Inputs: {p_v} FIP {pv['fip']:.2f} (blend {fip_v:.2f}) {ip_v:.1f}IP {mano_v or '?'} | "
-              f"{p_c} FIP {pc['fip']:.2f} (blend {fip_c:.2f}) {ip_c:.1f}IP {mano_c or '?'}")
-        print(f"Bullpens: {visita} FIP {bp_v['fip']:.2f} K/BB {bp_v['k9']:.1f}/{bp_v['bb9']:.1f} | "
-              f"{casa} FIP {bp_c['fip']:.2f} K/BB {bp_c['k9']:.1f}/{bp_c['bb9']:.1f}")
-        print(f"Ofensivas: {visita} {rg_v:.2f}x{split_v:.2f} | {casa} {rg_c:.2f}x{split_c:.2f} R/G | Park {park}")
-        print(f"Factores: DEF {def_c:.3f}/{def_v:.3f}")
-        print(f"Carreras esp: {visita} {lam_v:.2f} — {casa} {lam_c:.2f} (total {lam_v+lam_c:.2f})")
-        print(f"ML: {casa} {p_casa:.1%} ({prob_a_momio(p_casa)}) | {visita} {1-p_casa:.1%} ({prob_a_momio(1-p_casa)})")
-        print(f"RL: {casa} -1.5 {p_casa_rl:.1%} | {visita} +1.5 {1-p_casa_rl:.1%}")
+        print(f"Inputs: {r['abridor_v']} FIP {r['fip_v']:.2f} {r['ip_v']:.1f}IP {r['mano_v'] or '?'} | "
+              f"{r['abridor_c']} FIP {r['fip_c']:.2f} {r['ip_c']:.1f}IP {r['mano_c'] or '?'}")
+        print(f"Bullpens: {visita} FIP {r['bp_v']['fip']:.2f} K/BB {r['bp_v']['k9']:.1f}/{r['bp_v']['bb9']:.1f} | "
+              f"{casa} FIP {r['bp_c']['fip']:.2f} K/BB {r['bp_c']['k9']:.1f}/{r['bp_c']['bb9']:.1f}")
+        print(f"Ofensivas: {visita} {r['rg_v']:.2f}x{r['split_v']:.2f} | "
+              f"{casa} {r['rg_c']:.2f}x{r['split_c']:.2f} R/G | Park {r['park']}")
+        print(f"Factores: DEF {r['def_c']:.3f}/{r['def_v']:.3f}")
+        print(f"Carreras esp: {visita} {r['lam_v']:.2f} — {casa} {r['lam_c']:.2f} (total {r['total_esp']:.2f})")
+        print(f"ML: {casa} {r['p_casa']:.1%} ({prob_a_momio(r['p_casa'])}) | "
+              f"{visita} {r['p_visita']:.1%} ({prob_a_momio(r['p_visita'])})")
+        print(f"RL: {casa} -1.5 {r['p_casa_rl']:.1%} | {visita} +1.5 {r['p_visita_rl']:.1%}")
         print("Overs:  " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs.items()))
         print("Unders: " + " | ".join(f"U{ln} {1-p:.0%}" for ln, p in overs.items()))
 
-        print(f"[F5] Carreras esp: {visita} {lam_v_f5:.2f} — {casa} {lam_c_f5:.2f} (total {lam_v_f5+lam_c_f5:.2f})")
-        print(f"[F5] ML 3 vias: {casa} {p_casa_f5:.1%} ({prob_a_momio(p_casa_f5)}) | "
-              f"empate {p_empate_f5:.1%} ({prob_a_momio(p_empate_f5)}) | "
-              f"{visita} {p_visita_f5:.1%} ({prob_a_momio(p_visita_f5)})")
-        print(f"[F5] RL +0.5: {casa} {rl_casa_f5:.1%} ({prob_a_momio(rl_casa_f5)}) | "
-              f"{visita} {rl_visita_f5:.1%} ({prob_a_momio(rl_visita_f5)})")
-        print(f"[F5] Totales: " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs_f5.items()))
-
-        # NRFI/YRFI: 1ra entrada, lanza solo el abridor (FIP blend, sin bullpen)
-        l1_v = lambda_inning1(rg_v, split_v, multiplicador_pitcheo(fip_c), def_c, park)
-        l1_c = lambda_inning1(rg_c, split_c, multiplicador_pitcheo(fip_v), def_v, park, HFA)
-        nrfi = prob_nrfi(l1_v, l1_c)
+        print(f"[F5] Carreras esp: {visita} {f5['lam_v']:.2f} — {casa} {f5['lam_c']:.2f} "
+              f"(total {f5['total_esp']:.2f})")
+        print(f"[F5] ML 3 vias: {casa} {f5['p_casa']:.1%} ({prob_a_momio(f5['p_casa'])}) | "
+              f"empate {f5['p_empate']:.1%} ({prob_a_momio(f5['p_empate'])}) | "
+              f"{visita} {f5['p_visita']:.1%} ({prob_a_momio(f5['p_visita'])})")
+        print(f"[F5] RL +0.5: {casa} {f5['rl_casa']:.1%} ({prob_a_momio(f5['rl_casa'])}) | "
+              f"{visita} {f5['rl_visita']:.1%} ({prob_a_momio(f5['rl_visita'])})")
+        print("[F5] Totales: " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs_f5.items()))
         print(f"[1ra] NRFI {nrfi['nrfi']:.1%} ({prob_a_momio(nrfi['nrfi'])}) | "
               f"YRFI {nrfi['yrfi']:.1%} ({prob_a_momio(nrfi['yrfi'])}) | "
               f"anota: {visita} {nrfi['anota_visita']:.1%}, {casa} {nrfi['anota_casa']:.1%}")
 
-        # #2: valor contra el mercado
-        jugadas = valor.analizar_juego(valor.buscar(odds_slate, visita, casa), visita, casa, p_casa, overs)
+        jugadas = valor.analizar_juego(valor.buscar(odds_slate, visita, casa),
+                                       visita, casa, r["p_casa"], overs)
         for jg in jugadas:
             print(valor.formato_jugada(jg))
             jugadas_valor.append((visita, casa, jg))
         print()
 
         filas_csv.append(",".join([
-            hoy, visita, casa, p_v, p_c,
-            f"{lam_v:.2f}", f"{lam_c:.2f}", f"{lam_v+lam_c:.2f}",
-            f"{p_casa:.3f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
-            f"{lam_v_f5+lam_c_f5:.2f}", f"{p_casa_f5:.3f}", f"{p_empate_f5:.3f}",
-            f"{p_visita_f5:.3f}", f"{overs_f5[4.5]:.3f}",
-            f"{rl_casa_f5:.3f}", f"{rl_visita_f5:.3f}"
+            hoy, visita, casa, r["abridor_v"], r["abridor_c"],
+            f"{r['lam_v']:.2f}", f"{r['lam_c']:.2f}", f"{r['total_esp']:.2f}",
+            f"{r['p_casa']:.3f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
+            f"{f5['total_esp']:.2f}", f"{f5['p_casa']:.3f}", f"{f5['p_empate']:.3f}",
+            f"{f5['p_visita']:.3f}", f"{overs_f5[4.5]:.3f}",
+            f"{f5['rl_casa']:.3f}", f"{f5['rl_visita']:.3f}",
+            f"{nrfi['nrfi']:.3f}",
         ]))
 
     if totales_slate:
@@ -934,20 +1036,28 @@ def correr(fecha=None):
     # ---------------- GUARDADO (anti-duplicados, #6) ----------------
 
     archivo = "predicciones.csv"
+    CABECERA = ("fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,"
+                "total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5,p_nrfi\n")
     nuevo = not os.path.exists(archivo)
     existentes = set()
     if not nuevo:
         with open(archivo, encoding="utf-8") as f:
-            for linea in f.readlines()[1:]:
-                partes = linea.split(",")
-                if len(partes) >= 3:
-                    existentes.add((partes[0], partes[1], partes[2]))
+            lineas = f.readlines()
+        # Al agregar columnas nuevas hay que reescribir la cabecera, si no el
+        # historico viejo y el nuevo quedan desalineados y validar.py lee mal.
+        if lineas and lineas[0] != CABECERA:
+            lineas[0] = CABECERA
+            with open(archivo, "w", encoding="utf-8") as f:
+                f.writelines(lineas)
+        for linea in lineas[1:]:
+            partes = linea.split(",")
+            if len(partes) >= 3:
+                existentes.add((partes[0], partes[1], partes[2]))
 
     guardadas = 0
     with open(archivo, "a", encoding="utf-8") as f:
         if nuevo:
-            f.write("fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,"
-                    "total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5\n")
+            f.write(CABECERA)
         for fila in filas_csv:
             partes = fila.split(",")
             clave = (partes[0], partes[1], partes[2])
