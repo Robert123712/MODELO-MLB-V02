@@ -1,4 +1,4 @@
-fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5
+fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5,p_nrfi
 06/10/2026,Chicago Cubs,Colorado Rockies,Shota Imanaga,Michael Lorenzen,6.09,6.13,12.22,0.506,0.917,0.856,0.771,,,,,,,
 06/10/2026,Milwaukee Brewers,Athletics,Brandon Sproat,Jack Perkins,5.10,5.79,10.89,0.586,0.847,0.756,0.648,,,,,,,
 06/10/2026,Houston Astros,Los Angeles Angels,Peter Lambert,Reid Detmers,3.60,4.40,8.00,0.615,0.545,0.404,0.281,,,,,,,
@@ -358,3 +358,18 @@ fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_ov
 08/07/2026,Houston Astros,San Diego Padres,Ronel Blanco,Robbie Ray,3.82,4.57,8.39,0.572,0.538,0.442,0.352,4.49,0.474,0.168,0.359,0.430,0.641,0.526
 08/07/2026,Tampa Bay Rays,Seattle Mariners,Drew Rasmussen,Logan Gilbert,3.72,3.35,7.07,0.460,0.403,0.309,0.229,3.55,0.357,0.203,0.439,0.302,0.561,0.643
 08/07/2026,Detroit Tigers,San Francisco Giants,Keider Montero,JT Brubaker,4.57,3.96,8.53,0.443,0.551,0.453,0.364,4.40,0.375,0.170,0.455,0.422,0.545,0.625
+08/08/2026,Atlanta Braves,New York Yankees,Chris Sale,Gerrit Cole,4.54,3.47,8.01,0.392,0.496,0.397,0.312,4.07,0.321,0.181,0.498,0.371,0.502,0.679,0.537
+08/08/2026,Athletics,Boston Red Sox,Gage Jump,Jake Bennett,3.71,5.41,9.12,0.650,0.599,0.504,0.414,4.70,0.520,0.159,0.321,0.454,0.679,0.480,0.505
+08/08/2026,Los Angeles Angels,Miami Marlins,Walbert Ureña,Sandy Alcantara,3.50,3.96,7.46,0.551,0.446,0.348,0.268,3.85,0.434,0.188,0.378,0.343,0.622,0.566,0.548
+08/08/2026,Toronto Blue Jays,Philadelphia Phillies,Max Scherzer,Aaron Nola,4.02,4.75,8.77,0.570,0.571,0.473,0.386,4.85,0.468,0.159,0.373,0.481,0.627,0.532,0.492
+08/08/2026,New York Mets,Pittsburgh Pirates,Robert Stock,Bubba Chandler,3.95,4.82,8.77,0.584,0.572,0.476,0.385,4.60,0.481,0.165,0.355,0.448,0.645,0.519,0.509
+08/08/2026,Cincinnati Reds,Washington Nationals,Chase Burns,Andrew Alvarez,4.21,4.96,9.17,0.565,0.604,0.509,0.420,4.39,0.458,0.168,0.373,0.418,0.627,0.542,0.519
+08/08/2026,Chicago Cubs,Kansas City Royals,Clay Holmes,Seth Lugo,5.18,3.83,9.01,0.376,0.590,0.495,0.406,4.44,0.327,0.167,0.506,0.425,0.494,0.673,0.517
+08/08/2026,Minnesota Twins,Milwaukee Brewers,Taj Bradley,Robert Gasser,3.74,4.74,8.48,0.599,0.546,0.449,0.361,4.42,0.468,0.170,0.362,0.424,0.638,0.532,0.517
+08/08/2026,Houston Astros,San Diego Padres,Peter Lambert,Michael King,4.21,4.08,8.29,0.488,0.528,0.432,0.344,4.30,0.386,0.171,0.443,0.410,0.557,0.614,0.523
+08/08/2026,Detroit Tigers,San Francisco Giants,Jackson Jobe,Landen Roupp,4.46,4.11,8.58,0.466,0.552,0.455,0.367,4.48,0.412,0.168,0.420,0.438,0.580,0.588,0.513
+08/08/2026,Colorado Rockies,St. Louis Cardinals,Kyle Freeland,Matthew Liberatore,4.01,4.23,8.24,0.522,0.527,0.429,0.340,4.30,0.429,0.174,0.397,0.411,0.603,0.571,0.523
+08/08/2026,Baltimore Orioles,Texas Rangers,Kyle Bradish,Jacob deGrom,4.10,4.04,8.14,0.495,0.513,0.416,0.327,4.15,0.415,0.181,0.405,0.386,0.596,0.585,0.533
+08/08/2026,Cleveland Guardians,Chicago White Sox,Gavin Williams,Anthony Kay,3.80,4.25,8.05,0.544,0.505,0.406,0.319,4.17,0.426,0.181,0.393,0.391,0.607,0.574,0.530
+08/08/2026,Los Angeles Dodgers,Arizona Diamondbacks,Yoshinobu Yamamoto,Brandon Pfaadt,4.66,4.29,8.94,0.465,0.588,0.494,0.404,4.65,0.397,0.164,0.440,0.450,0.560,0.603,0.505
+08/08/2026,Tampa Bay Rays,Seattle Mariners,Griffin Jax,George Kirby,3.85,3.60,7.46,0.473,0.445,0.349,0.265,3.84,0.373,0.190,0.437,0.342,0.563,0.627,0.549
