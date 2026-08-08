@@ -68,6 +68,30 @@ NRFI usan la misma λ reescalada con su propia dispersión.
 sobre el histórico, ver el sesgo, y mover. `validar.py` ya sugiere ajustar
 `AJUSTE_BASE` cuando detecta bias consistente en totales.
 
+## Cómo se comportan las líneas de casino
+
+El modelo produce **probabilidades**; el mercado produce **precios**, y no son lo
+mismo. Tres reglas implementadas en `prob_a_momio()` y `momio_mercado()`:
+
+1. **`-100` no existe.** En momio americano el negativo dice cuánto arriesgas
+   para ganar 100, así que −100 es idéntico a +100. Se rotula **EVEN** (o PK).
+2. **La casa nunca publica el precio justo.** Le carga su margen (vig): las
+   probabilidades implicadas de los dos lados suman ~104-105%. Por eso un juego
+   50/50 se postea **−110/−110**, no EVEN/EVEN. Y el vig **se carga sobre el no
+   favorito**: a 75% real el mercado pone −300/+250, no −360/+230 (repartirlo
+   proporcionalmente exagera a los favoritos grandes).
+3. **Los momios van en escalones**: 5 cerca del pick, 10 en favoritos medianos,
+   25 cuando el precio se dispara. Nadie postea −107 en un moneyline.
+
+**Consecuencia práctica:** el momio justo del modelo casi siempre se ve "mejor"
+que el del casino — eso NO es valor, es el vig. Para juzgar valor hay que
+comparar contra `momio_mercado()` (la línea que una casa realmente pondría) o
+de-viguear la del casino, que es lo que hace `valor.py`.
+
+La conversión vive **solo en `modelo_diario.py`**; `generar_excel.py` la importa.
+El JS de las páginas tiene un espejo (`momio`/`momioCasa`) porque es formato de
+presentación: si cambias las reglas en Python, cámbialas también ahí.
+
 ## Errores estadísticos en los que este proyecto ya cayó
 
 Sirven como lista de verificación antes de agregar cualquier factor:

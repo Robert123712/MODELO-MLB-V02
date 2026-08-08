@@ -40,12 +40,10 @@ thin_border = Border(
 )
 fill_par = PatternFill("solid", fgColor=GRIS)
 
-def prob_a_momio(p):
-    if p <= 0.01 or p >= 0.99:
-        return "—"
-    if p >= 0.5:
-        return f"{-round(100 * p / (1 - p))}"
-    return f"+{round(100 * (1 - p) / p)}"
+# La conversion a momios vive en modelo_diario (reglas del mercado: EVEN en vez
+# de -100, vig cargado al no favorito, escalones reales). Aqui solo se reusa.
+prob_a_momio = m.prob_a_momio
+momio_mercado = m.momio_mercado
 
 def estilo_celda(ws, row, col, value, font=data_font, fill=None, fmt=None, align=None):
     cell = ws.cell(row=row, column=col, value=value)
@@ -126,7 +124,7 @@ def generar(fecha=None):
         "RG V", "RG C", "Split V", "Split C", "Park",
         "DEF V", "DEF C",
         "λ V", "λ C", "Total λ",
-        "ML V %", "ML V Momio", "ML C %", "ML C Momio",
+        "ML V %", "ML V Justo", "ML V Casa", "ML C %", "ML C Justo", "ML C Casa",
         "RL V +1.5", "RL C -1.5",
         "NRFI",
         "O5.5", "O6.5", "O7.5", "O8.5", "O9.5", "O10.5",
@@ -135,9 +133,9 @@ def generar(fecha=None):
     ws1.row_dimensions[fila].height = 35
 
     data_fila = fila + 1
-    COL_OVERS = 28          # primera columna de overs (1-indexada)
-    COL_ML_PCT = (21, 23)
-    COL_ML_MOM = (22, 24)
+    COL_OVERS = 30          # primera columna de overs (1-indexada)
+    COL_ML_PCT = (21, 24)
+    COL_ML_MOM = (22, 23, 25, 26)
 
     for idx, r in enumerate(evaluados):
         overs, p_casa = r["overs"], r["p_casa"]
@@ -149,8 +147,8 @@ def generar(fecha=None):
             round(r["split_v"], 3), round(r["split_c"], 3), r["park"],
             round(r["def_v"], 3), round(r["def_c"], 3),
             round(r["lam_v"], 2), round(r["lam_c"], 2), round(r["total_esp"], 2),
-            round(r["p_visita"], 4), prob_a_momio(r["p_visita"]),
-            round(p_casa, 4), prob_a_momio(p_casa),
+            round(r["p_visita"], 4), prob_a_momio(r["p_visita"]), momio_mercado(r["p_visita"]),
+            round(p_casa, 4), prob_a_momio(p_casa), momio_mercado(p_casa),
             round(r["p_visita_rl"], 4), round(r["p_casa_rl"], 4),
             round(r["nrfi"]["nrfi"], 4),
             round(overs[5.5], 4), round(overs[6.5], 4), round(overs[7.5], 4),
@@ -169,14 +167,14 @@ def generar(fecha=None):
                 colorear_overs(ws1, row, col, val)
             elif isinstance(val, float):
                 cell.number_format = dec_fmt
-            if col in COL_ML_PCT or col == 27:
+            if col in COL_ML_PCT or col == 29:
                 cell.number_format = pct_fmt
             if col in COL_ML_MOM:
                 cell.alignment = Alignment(horizontal="center")
 
     # Anchos de columna
     anchos = [20, 20, 18, 18, 7, 7, 6, 6, 9, 9, 7, 7, 7, 7, 5,
-              7, 7, 7, 7, 8, 9, 9, 9, 9, 9, 9, 7, 6, 6, 6, 6, 6, 6]
+              7, 7, 7, 7, 8, 9, 9, 9, 9, 9, 9, 9, 9, 7, 6, 6, 6, 6, 6, 6]
     for i, a in enumerate(anchos, 1):
         ws1.column_dimensions[get_column_letter(i)].width = a
     ws1.freeze_panes = ws1.cell(row=fila + 1, column=1)
@@ -233,7 +231,8 @@ def generar(fecha=None):
         par(fila2, "Total Esperado", round(r["total_esp"], 2), "—"); fila2 += 1
         par(fila2, "Park Factor", r["park"], "—"); fila2 += 1
         par(fila2, "Moneyline Prob", round(p_visita, 4), round(p_casa, 4), pct_fmt); fila2 += 1
-        par(fila2, "Moneyline Momio", prob_a_momio(p_visita), prob_a_momio(p_casa)); fila2 += 1
+        par(fila2, "Moneyline Momio justo", prob_a_momio(p_visita), prob_a_momio(p_casa)); fila2 += 1
+        par(fila2, "Moneyline línea casa", momio_mercado(p_visita), momio_mercado(p_casa)); fila2 += 1
         par(fila2, "Run Line +1.5 / -1.5", round(r["p_visita_rl"], 4), round(r["p_casa_rl"], 4), pct_fmt); fila2 += 1
         par(fila2, "Total del equipo O4.5", round(r["tt_visita"][4.5], 4), round(r["tt_casa"][4.5], 4), pct_fmt); fila2 += 1
         fila2 += 1
@@ -263,14 +262,14 @@ def generar(fecha=None):
             ("Carreras λ V (F5)", round(f5["lam_v"], 2)),
             ("Carreras λ C (F5)", round(f5["lam_c"], 2)),
             ("Total F5", round(f5["total_esp"], 2)),
-            ("ML F5 Casa", f"{f5['p_casa']:.1%} ({prob_a_momio(f5['p_casa'])})"),
-            ("ML F5 Visita", f"{f5['p_visita']:.1%} ({prob_a_momio(f5['p_visita'])})"),
-            ("ML F5 Empate", f"{f5['p_empate']:.1%} ({prob_a_momio(f5['p_empate'])})"),
+            ("ML F5 Casa", f"{f5['p_casa']:.1%} (justo {prob_a_momio(f5['p_casa'])} / casa {momio_mercado(f5['p_casa'])})"),
+            ("ML F5 Visita", f"{f5['p_visita']:.1%} (justo {prob_a_momio(f5['p_visita'])} / casa {momio_mercado(f5['p_visita'])})"),
+            ("ML F5 Empate", f"{f5['p_empate']:.1%} (justo {prob_a_momio(f5['p_empate'])} / casa {momio_mercado(f5['p_empate'])})"),
             ("RL F5 Casa +0.5", f"{f5['rl_casa']:.1%}"),
             ("RL F5 Visita +0.5", f"{f5['rl_visita']:.1%}"),
             ("Total F5 O4.5", f"{f5['overs'][4.5]:.1%}"),
-            ("NRFI (1ª sin carreras)", f"{r['nrfi']['nrfi']:.1%} ({prob_a_momio(r['nrfi']['nrfi'])})"),
-            ("YRFI", f"{r['nrfi']['yrfi']:.1%} ({prob_a_momio(r['nrfi']['yrfi'])})"),
+            ("NRFI (1ª sin carreras)", f"{r['nrfi']['nrfi']:.1%} (justo {prob_a_momio(r['nrfi']['nrfi'])} / casa {momio_mercado(r['nrfi']['nrfi'])})"),
+            ("YRFI", f"{r['nrfi']['yrfi']:.1%} (justo {prob_a_momio(r['nrfi']['yrfi'])} / casa {momio_mercado(r['nrfi']['yrfi'])})"),
         ]
         for lbl, val in detalle:
             estilo_celda(ws2, fila2, 1, lbl, font=bold_font)
