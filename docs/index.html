@@ -195,6 +195,24 @@
       .team.home { text-align: left; }
       .mid { text-align: left; padding: 4px 0; }
     }
+
+    /* panel del token (solo en la pagina publica) */
+    .panel-token {
+      width: 100%; margin-top: 12px; padding: 14px 16px;
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    }
+    .panel-token .pt-titulo { font-size: 13.5px; font-weight: 700; margin-bottom: 6px; }
+    .panel-token .pt-texto { font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+    .panel-token .pt-pasos { font-size: 13px; color: var(--ink-2); margin: 0 0 10px 18px; }
+    .panel-token .pt-pasos li { margin-bottom: 3px; }
+    .panel-token input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--ink);
+      border-radius: 8px; padding: 9px 11px; font: inherit; font-family: ui-monospace, monospace;
+      font-size: 13px; margin-bottom: 10px;
+    }
+    .panel-token .pt-botones { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .panel-token .pt-link { font-size: 12.5px; margin-left: auto; }
+    .panel-token .pt-nota { font-size: 11.5px; color: var(--ink-3); margin-top: 10px; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -212,11 +230,40 @@
   <main class="wrap">
 
     <div class="controls">
-      <div>
-        <label>Snapshot diario</label>
+      <div style="flex:1 1 260px">
+        <label>Snapshot</label>
         <p id="snapshot-info" style="font-size:14px; color:var(--ink-2); font-weight:600;">Cargando…</p>
-        <p style="font-size:12px; color:var(--ink-3); margin-top:3px;">Se actualiza automáticamente cada día (~10:30am CDMX) con los abridores anunciados</p>
+        <p style="font-size:12px; color:var(--ink-3); margin-top:3px;">Se actualiza solo cada día (~10:30am CDMX). Con el botón lo corres cuando quieras.</p>
       </div>
+      <button id="btn-run" class="btn-primary">⟳ Correr partidos</button>
+      <button id="btn-reload" class="btn-ghost" title="Volver a bajar el último resultado">Recargar</button>
+      <p id="run-estado" class="calib hidden"></p>
+
+      <div id="panel-token" class="panel-token hidden">
+        <p class="pt-titulo">Para correr los partidos desde aquí</p>
+        <p class="pt-texto">
+          La página es estática (GitHub Pages) y no puede ejecutar el modelo por sí sola:
+          lo corre GitHub Actions. Pégale un <strong>token</strong> tuyo y el botón lo dispara solo.
+        </p>
+        <ol class="pt-pasos">
+          <li>Abre <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a></li>
+          <li>Repository access: <strong>Only select repositories</strong> → este repo</li>
+          <li>Permissions → Repository → <strong>Actions: Read and write</strong></li>
+          <li>Genera el token y pégalo aquí abajo</li>
+        </ol>
+        <input id="input-token" type="password" placeholder="github_pat_..." autocomplete="off" spellcheck="false">
+        <div class="pt-botones">
+          <button id="btn-token-guardar" class="btn-primary">Guardar</button>
+          <button id="btn-token-cancelar" class="btn-ghost">Cancelar</button>
+          <button id="btn-token-borrar" class="btn-ghost">Borrar token</button>
+          <a id="link-actions" href="#" target="_blank" rel="noopener" class="pt-link">o córrelo desde Actions →</a>
+        </div>
+        <p class="pt-nota">
+          El token se guarda solo en este navegador (localStorage), nunca en el repositorio.
+          Usa uno de alcance mínimo como el de arriba y ponle fecha de expiración.
+        </p>
+      </div>
+
       <p id="calibracion-info" class="calib hidden"></p>
     </div>
 
@@ -246,32 +293,66 @@ const $ = id => document.getElementById(id);
 const resultados = $('resultados'), gameCards = $('game-cards'), skeleton = $('skeleton');
 const emptyState = $('empty-state'), errorDiv = $('error');
 const slateSummary = $('slate-summary'), calibInfo = $('calibracion-info'), statusInd = $('status-indicator');
-const snapshotInfo = $('snapshot-info');
+const snapshotInfo = $('snapshot-info'), runEstado = $('run-estado');
+const btnRun = $('btn-run'), btnReload = $('btn-reload'), panelToken = $('panel-token');
+
+/* ---------- configuración ---------- */
+const REPO = 'Robert123712/MODELO-MLB-V02';
+const WORKFLOW = 'modelo-diario.yml';
+// raw.githubusercontent publica el commit al instante; la copia de Pages tarda
+// ~1 min más en desplegarse. Se intenta la fresca primero.
+const URL_RAW = `https://raw.githubusercontent.com/${REPO}/main/docs/data/latest.json`;
+const URL_ACTIONS = `https://github.com/${REPO}/actions/workflows/${WORKFLOW}`;
+const CLAVE_TOKEN = 'mlb_modelo_token';
+
+const ESPERA_MAX_MS = 8 * 60 * 1000;   // el Action tarda ~2 min; margen de sobra
+const INTERVALO_MS = 12 * 1000;
+
+let generadoActual = null;
 
 function setStatus(cls, txt) { statusInd.innerHTML = `<span class="dot ${cls}"></span> ${txt}`; }
+function estado(txt) {
+  runEstado.textContent = txt || '';
+  runEstado.classList.toggle('hidden', !txt);
+}
 
-async function cargar() {
-  skeleton.classList.remove('hidden');
+/* ---------- datos ---------- */
+async function traerSnapshot() {
+  const t = Date.now();
+  for (const url of [`${URL_RAW}?t=${t}`, `data/latest.json?t=${t}`]) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (res.ok) return await res.json();
+    } catch (e) { /* intenta la siguiente */ }
+  }
+  return null;
+}
+
+function pintar(data) {
+  const gen = data.generado_en ? new Date(data.generado_en) : null;
+  generadoActual = data.generado_en || null;
+  snapshotInfo.textContent = `Slate del ${data.fecha}` +
+    (gen ? ` · generado ${gen.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}` : '');
+  renderResultados(data);
+}
+
+async function cargar(silencioso) {
+  if (!silencioso) skeleton.classList.remove('hidden');
   setStatus('run', 'Cargando…');
-  let data;
-  try {
-    const res = await fetch('data/latest.json', { cache: 'no-store' });
-    if (!res.ok) throw new Error('sin datos');
-    data = await res.json();
-  } catch (err) {
+  const data = await traerSnapshot();
+  if (!data) {
     snapshotInfo.textContent = 'Sin datos todavía';
     emptyState.classList.remove('hidden');
     setStatus('err', 'Sin corrida');
     skeleton.classList.add('hidden');
     return;
   }
-  // El render va fuera del try de la descarga: si algo truena aqui es un bug de
-  // la pagina, no falta de datos, y hay que verlo en vez de decir "sin corrida".
+  // El render va fuera del try de la descarga: si algo truena aquí es un bug de
+  // la página, no falta de datos, y hay que verlo en vez de decir "sin corrida".
   try {
-    const gen = data.generado_en ? new Date(data.generado_en) : null;
-    snapshotInfo.textContent = `Slate del ${data.fecha}` +
-      (gen ? ` · generado ${gen.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}` : '');
-    renderResultados(data);
+    emptyState.classList.add('hidden');
+    errorDiv.classList.add('hidden');
+    pintar(data);
   } catch (err) {
     errorDiv.textContent = '⚠ Error al dibujar los resultados: ' + err.message;
     errorDiv.classList.remove('hidden');
@@ -280,7 +361,121 @@ async function cargar() {
     skeleton.classList.add('hidden');
   }
 }
-cargar();
+
+/* ---------- correr los partidos ---------- */
+/* La página es estática: no puede ejecutar el modelo. Lo que hace es disparar
+   el workflow de GitHub Actions (que sí corre Python) y esperar el resultado. */
+
+function mostrarPanel(mostrar) {
+  panelToken.classList.toggle('hidden', !mostrar);
+  if (mostrar) {
+    $('link-actions').href = URL_ACTIONS;
+    $('btn-token-borrar').classList.toggle('hidden', !localStorage.getItem(CLAVE_TOKEN));
+    $('input-token').focus();
+  }
+}
+
+async function correrPartidos() {
+  const token = localStorage.getItem(CLAVE_TOKEN);
+  if (!token) { mostrarPanel(true); return; }
+
+  btnRun.disabled = true;
+  errorDiv.classList.add('hidden');
+  setStatus('run', 'Ejecutando…');
+  estado('Pidiendo la corrida a GitHub Actions…');
+
+  let res;
+  try {
+    res = await fetch(`https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ref: 'main' }),
+    });
+  } catch (err) {
+    btnRun.disabled = false;
+    estado('');
+    errorDiv.textContent = '⚠ No se pudo contactar a GitHub: ' + err.message;
+    errorDiv.classList.remove('hidden');
+    setStatus('err', 'Error');
+    return;
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    btnRun.disabled = false;
+    estado('');
+    localStorage.removeItem(CLAVE_TOKEN);
+    errorDiv.innerHTML = '⚠ El token no sirve o le faltan permisos (necesita <strong>Actions: Read and write</strong> en este repo). Vuelve a configurarlo.';
+    errorDiv.classList.remove('hidden');
+    setStatus('err', 'Token inválido');
+    mostrarPanel(true);
+    return;
+  }
+  if (!res.ok && res.status !== 204) {
+    btnRun.disabled = false;
+    estado('');
+    errorDiv.textContent = `⚠ GitHub respondió ${res.status}. Puedes correrlo desde la pestaña Actions del repo.`;
+    errorDiv.classList.remove('hidden');
+    setStatus('err', 'Error');
+    return;
+  }
+
+  await esperarResultado();
+}
+
+async function esperarResultado() {
+  const previo = generadoActual;
+  const inicio = Date.now();
+
+  while (Date.now() - inicio < ESPERA_MAX_MS) {
+    const seg = Math.round((Date.now() - inicio) / 1000);
+    estado(`Simulando el slate… ${seg}s (suele tardar ~2 min)`);
+    await new Promise(r => setTimeout(r, INTERVALO_MS));
+
+    const data = await traerSnapshot();
+    // Se compara contra el snapshot que ya teníamos: cuando cambia, la corrida
+    // termino y publico datos nuevos.
+    if (data && data.generado_en && data.generado_en !== previo) {
+      pintar(data);
+      estado('');
+      btnRun.disabled = false;
+      setStatus('ok', `${data.juegos.length} juegos · recién corrido`);
+      return;
+    }
+  }
+
+  estado('');
+  btnRun.disabled = false;
+  errorDiv.innerHTML = `⚠ La corrida tardó más de lo normal. Revisa cómo va en <a href="${URL_ACTIONS}" target="_blank" rel="noopener">Actions</a> y luego dale Recargar.`;
+  errorDiv.classList.remove('hidden');
+  setStatus('err', 'Sin respuesta');
+}
+
+/* ---------- eventos ---------- */
+btnRun.addEventListener('click', correrPartidos);
+btnReload.addEventListener('click', () => cargar(false));
+$('btn-token-cancelar').addEventListener('click', () => mostrarPanel(false));
+$('btn-token-borrar').addEventListener('click', () => {
+  localStorage.removeItem(CLAVE_TOKEN);
+  $('input-token').value = '';
+  mostrarPanel(false);
+});
+$('btn-token-guardar').addEventListener('click', () => {
+  const t = $('input-token').value.trim();
+  if (!t) return;
+  localStorage.setItem(CLAVE_TOKEN, t);
+  $('input-token').value = '';
+  mostrarPanel(false);
+  correrPartidos();
+});
+$('input-token').addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('btn-token-guardar').click();
+});
+
+cargar(false);
 
 /* ---------- helpers de formato ---------- */
 const pct = p => (p * 100).toFixed(1) + '%';
