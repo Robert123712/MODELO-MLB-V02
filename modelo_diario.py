@@ -109,12 +109,71 @@ def calcular_fip(hr, bb, hbp, k, ip):
         return None
     return (13*hr + 3*(bb + hbp) - 2*k) / ip + 3.17
 
+# ---------------- MOMIOS: COMO SE COMPORTAN LAS LINEAS REALES ----------------
+# Tres reglas del mercado que el modelo tiene que respetar:
+#
+# 1) "-100" NO EXISTE. En momio americano el negativo dice cuanto arriesgas para
+#    ganar 100, asi que -100 seria "arriesga 100 para ganar 100": exactamente lo
+#    mismo que +100. Las casas lo rotulan EVEN (o PK), nunca -100.
+#
+# 2) LAS CASAS NO PUBLICAN EL PRECIO JUSTO. Le cargan su margen (vig): las
+#    probabilidades implicadas de los dos lados suman ~104-105%, no 100%. Por eso
+#    un juego 50/50 se postea -110/-110 y NO EVEN/EVEN. Consecuencia practica:
+#    el momio justo del modelo casi siempre se ve "mejor" que el del casino, y
+#    compararlos de frente engania. Hay que compararlo contra la linea CON vig
+#    (momio_mercado) o de-viguear la del casino (eso hace valor.py).
+#
+# 3) LOS MOMIOS VAN EN ESCALONES. Ninguna casa postea -107 en un moneyline: se
+#    ven -105, -110, -115, -120..., y el escalon crece con el precio.
+
+VIG_TIPICO = 0.045   # sobre-redondez tipica de un mercado a 2 vias de MLB (~4.5%)
+
+
+def _momio_crudo(p):
+    """Magnitud del momio americano (siempre >= 100) para una probabilidad."""
+    return 100 * p / (1 - p) if p >= 0.5 else 100 * (1 - p) / p
+
+
+def _escalon_momio(m):
+    """Redondea a los escalones que las casas usan de verdad: 5 cerca del pick,
+    10 en favoritos medianos, 25 cuando el precio se dispara."""
+    paso = 5 if m < 200 else (10 if m < 400 else 25)
+    return int(round(m / paso) * paso)
+
+
 def prob_a_momio(p):
+    """Momio JUSTO (sin vig): el precio que hace la apuesta neutral.
+    Es el punto de referencia contra el que se mide la casa, no un precio que
+    alguien vaya a ofrecer. Devuelve EVEN en vez de -100 (ver regla 1)."""
     if p <= 0.01 or p >= 0.99:
         return "—"
-    if p >= 0.5:
-        return f"{-round(100 * p / (1 - p))}"
-    return f"+{round(100 * (1 - p) / p)}"
+    m = round(_momio_crudo(p))
+    if m == 100:
+        return "EVEN"
+    return f"-{m}" if p >= 0.5 else f"+{m}"
+
+
+def momio_mercado(p, vig=VIG_TIPICO):
+    """Lo que una casa POSTEARIA realmente: el precio justo mas su margen,
+    redondeado a escalones reales. Este es el numero que hay que comparar
+    contra tu casino: si te ofrecen MEJOR que esto hay valor; si te ofrecen
+    peor, te estan cobrando mas vig de la cuenta.
+
+    Nota: en mercados a 3 vias (ML de F5) el margen real suele ser mayor que
+    este 4.5%, asi que ahi la linea estimada queda algo conservadora."""
+    if p <= 0.01 or p >= 0.99:
+        return "—"
+    # La casa infla la probabilidad implicada de CADA lado (por eso los dos
+    # lados de un juego parejo salen negativos: -110/-110), pero NO por igual:
+    # carga el margen sobre el NO FAVORITO. Repartirlo proporcionalmente
+    # exageraba a los favoritos grandes (un 90% daba -1575 cuando el mercado
+    # real postea ~-950). Repartirlo segun (1-p) reproduce lineas reales:
+    # 75% -> -320/+250, 60% -> -160/+135, justo lo que se ve en un tablero.
+    p_vig = min(p + vig * (1 - p), 0.98)
+    m = _escalon_momio(_momio_crudo(p_vig))
+    if m == 100:
+        return "EVEN"
+    return f"-{m}" if p_vig >= 0.5 else f"+{m}"
 
 # --- caches (#6) ---
 cache_pitcher = {}   # nombre -> dict con fip, ip_esp, mano, k9, bb9, fip_reciente
@@ -993,8 +1052,10 @@ def correr(fecha=None):
               f"{casa} {r['rg_c']:.2f}x{r['split_c']:.2f} R/G | Park {r['park']}")
         print(f"Factores: DEF {r['def_c']:.3f}/{r['def_v']:.3f}")
         print(f"Carreras esp: {visita} {r['lam_v']:.2f} — {casa} {r['lam_c']:.2f} (total {r['total_esp']:.2f})")
-        print(f"ML: {casa} {r['p_casa']:.1%} ({prob_a_momio(r['p_casa'])}) | "
-              f"{visita} {r['p_visita']:.1%} ({prob_a_momio(r['p_visita'])})")
+        print(f"ML: {casa} {r['p_casa']:.1%} (justo {prob_a_momio(r['p_casa'])}, "
+              f"casa ~{momio_mercado(r['p_casa'])}) | "
+              f"{visita} {r['p_visita']:.1%} (justo {prob_a_momio(r['p_visita'])}, "
+              f"casa ~{momio_mercado(r['p_visita'])})")
         print(f"RL: {casa} -1.5 {r['p_casa_rl']:.1%} | {visita} +1.5 {r['p_visita_rl']:.1%}")
         print("Overs:  " + " | ".join(f"O{ln} {p:.0%}" for ln, p in overs.items()))
         print("Unders: " + " | ".join(f"U{ln} {1-p:.0%}" for ln, p in overs.items()))

@@ -114,6 +114,8 @@
     tr:last-child td { border-bottom: none; }
     td.lbl { color: var(--ink-2); font-size: 13.5px; font-weight: 600; }
     td.odds { color: var(--ink-2); font-family: ui-monospace, 'SF Mono', monospace; font-size: 13.5px; }
+    td.odds.casa { color: var(--ink); font-weight: 600; }
+    th.casa-h { color: var(--accent); }
     tr.fav td.lbl { color: var(--ink); }
     tr.fav td.lbl::before { content: '●'; color: var(--accent); font-size: 9px; margin-right: 6px; vertical-align: 1px; }
     tr.fav td { font-weight: 700; }
@@ -282,10 +284,35 @@ cargar();
 
 /* ---------- helpers de formato ---------- */
 const pct = p => (p * 100).toFixed(1) + '%';
+/* Momios — espejo de prob_a_momio/momio_mercado en modelo_diario.py.
+   Si cambias las reglas allá, cámbialas aquí. Tres reglas del mercado:
+   1) "-100" no existe: es lo mismo que +100 y se rotula EVEN.
+   2) La casa carga su margen (vig) sobre el NO FAVORITO, no a partes iguales.
+   3) Los momios van en escalones (5 / 10 / 25 según el tamaño). */
+const VIG_TIPICO = 0.045;
+
+function momioCrudo(p) { return p >= 0.5 ? 100 * p / (1 - p) : 100 * (1 - p) / p; }
+
+function escalonMomio(m) {
+  const paso = m < 200 ? 5 : (m < 400 ? 10 : 25);
+  return Math.round(m / paso) * paso;
+}
+
+/* Precio justo: sin vig. El benchmark, no algo que alguien ofrezca. */
 function momio(p) {
   if (p <= 0.01 || p >= 0.99) return '—';
-  if (p >= 0.5) return String(-Math.round(100 * p / (1 - p)));
-  return '+' + String(Math.round(100 * (1 - p) / p));
+  const m = Math.round(momioCrudo(p));
+  if (m === 100) return 'EVEN';
+  return (p >= 0.5 ? '-' : '+') + m;
+}
+
+/* Lo que una casa postearía de verdad: contra esto compara tu casino. */
+function momioCasa(p) {
+  if (p <= 0.01 || p >= 0.99) return '—';
+  const pv = Math.min(p + VIG_TIPICO * (1 - p), 0.98);
+  const m = escalonMomio(momioCrudo(pv));
+  if (m === 100) return 'EVEN';
+  return (pv >= 0.5 ? '-' : '+') + m;
 }
 const fx = (v, n=2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(n);
 
@@ -336,7 +363,8 @@ function histograma(dist, linea) {
 
 /* fila: etiqueta | prob | momio justo (fav = énfasis) */
 const filaPM = (lbl, p, fav) =>
-  `<tr class="${fav ? 'fav' : ''}"><td class="lbl">${lbl}</td><td>${pct(p)}</td><td class="odds">${momio(p)}</td></tr>`;
+  `<tr class="${fav ? 'fav' : ''}"><td class="lbl">${lbl}</td><td>${pct(p)}</td>` +
+  `<td class="odds">${momio(p)}</td><td class="odds casa">${momioCasa(p)}</td></tr>`;
 
 /* ---------- render ---------- */
 function renderResultados(data) {
@@ -380,8 +408,8 @@ function cardJuego(g) {
   const filasOU = lineasOU.map(([ln, p]) => `
     <tr class="${ln === cercana ? 'hl' : ''}">
       <td class="lbl">${ln} ${ln === cercana ? `<span class="hl-note">≈ esperado</span>` : ''}</td>
-      <td>${pct(p)}</td><td class="odds">${momio(p)}</td>
-      <td>${pct(1 - p)}</td><td class="odds">${momio(1 - p)}</td>
+      <td>${pct(p)}</td><td class="odds">${momio(p)}</td><td class="odds casa">${momioCasa(p)}</td>
+      <td>${pct(1 - p)}</td><td class="odds">${momio(1 - p)}</td><td class="odds casa">${momioCasa(1 - p)}</td>
     </tr>`).join('');
 
   /* --- totales por equipo --- */
@@ -405,8 +433,8 @@ function cardJuego(g) {
   const favF5 = Math.max(f.p_casa, f.p_visita, f.p_empate);
   const filasF5OU = Object.entries(f.overs).map(([ln, p]) => `
     <tr><td class="lbl">${ln}</td>
-      <td>${pct(p)}</td><td class="odds">${momio(p)}</td>
-      <td>${pct(1 - p)}</td><td class="odds">${momio(1 - p)}</td></tr>`).join('');
+      <td>${pct(p)}</td><td class="odds">${momio(p)}</td><td class="odds casa">${momioCasa(p)}</td>
+      <td>${pct(1 - p)}</td><td class="odds">${momio(1 - p)}</td><td class="odds casa">${momioCasa(1 - p)}</td></tr>`).join('');
 
   /* --- jugadas +EV --- */
   let evHTML = '';
@@ -493,7 +521,7 @@ function cardJuego(g) {
         <section class="block">
           <h4>Moneyline</h4>
           <table>
-            <thead><tr><th>Equipo</th><th>Prob</th><th>Momio justo</th></tr></thead>
+            <thead><tr><th>Equipo</th><th>Prob</th><th>Justo</th><th>Línea casa</th></tr></thead>
             <tbody>
               ${filaPM(g.visita, g.p_visita, !favCasa)}
               ${filaPM(g.casa, g.p_casa, favCasa)}
@@ -504,7 +532,7 @@ function cardJuego(g) {
         <section class="block">
           <h4>Run line</h4>
           <table>
-            <thead><tr><th>Equipo</th><th>Prob</th><th>Momio justo</th></tr></thead>
+            <thead><tr><th>Equipo</th><th>Prob</th><th>Justo</th><th>Línea casa</th></tr></thead>
             <tbody>
               ${filaPM(`${g.visita} +1.5`, g.p_visita_rl, g.p_visita_rl >= 0.5)}
               ${filaPM(`${g.casa} −1.5`, g.p_casa_rl, g.p_casa_rl >= 0.5)}
@@ -517,7 +545,7 @@ function cardJuego(g) {
         <section class="block">
           <h4>Totales del juego <span class="note">(over / under)</span></h4>
           <table>
-            <thead><tr><th>Línea</th><th>Over</th><th>Momio</th><th>Under</th><th>Momio</th></tr></thead>
+            <thead><tr><th>Línea</th><th>Over</th><th>Justo</th><th>Casa</th><th>Under</th><th>Justo</th><th>Casa</th></tr></thead>
             <tbody>${filasOU}</tbody>
           </table>
         </section>
@@ -552,7 +580,7 @@ function cardJuego(g) {
           <section class="block">
             <h4>ML 3 vías</h4>
             <table>
-              <thead><tr><th>Resultado</th><th>Prob</th><th>Momio justo</th></tr></thead>
+              <thead><tr><th>Resultado</th><th>Prob</th><th>Justo</th><th>Línea casa</th></tr></thead>
               <tbody>
                 ${filaPM(g.visita, f.p_visita, f.p_visita === favF5)}
                 ${filaPM('Empate', f.p_empate, f.p_empate === favF5)}
@@ -564,7 +592,7 @@ function cardJuego(g) {
           <section class="block">
             <h4>Run line F5 (±0.5)</h4>
             <table>
-              <thead><tr><th>Equipo</th><th>Prob</th><th>Momio justo</th></tr></thead>
+              <thead><tr><th>Equipo</th><th>Prob</th><th>Justo</th><th>Línea casa</th></tr></thead>
               <tbody>
                 ${filaPM(`${g.visita} −0.5`, f.p_visita, false)}
                 ${filaPM(`${g.visita} +0.5`, f.rl_visita, f.rl_visita >= 0.5)}
@@ -577,7 +605,7 @@ function cardJuego(g) {
           <section class="block">
             <h4>Totales F5</h4>
             <table>
-              <thead><tr><th>Línea</th><th>Over</th><th>Momio</th><th>Under</th><th>Momio</th></tr></thead>
+              <thead><tr><th>Línea</th><th>Over</th><th>Justo</th><th>Casa</th><th>Under</th><th>Justo</th><th>Casa</th></tr></thead>
               <tbody>${filasF5OU}</tbody>
             </table>
           </section>
@@ -586,7 +614,7 @@ function cardJuego(g) {
           <section class="block">
             <h4>1ª entrada (NRFI / YRFI)</h4>
             <table>
-              <thead><tr><th>Resultado</th><th>Prob</th><th>Momio justo</th></tr></thead>
+              <thead><tr><th>Resultado</th><th>Prob</th><th>Justo</th><th>Línea casa</th></tr></thead>
               <tbody>
                 ${filaPM('NRFI · sin carreras', g.nrfi.nrfi, g.nrfi.nrfi >= 0.5)}
                 ${filaPM('YRFI · alguien anota', g.nrfi.yrfi, g.nrfi.yrfi >= 0.5)}
