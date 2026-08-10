@@ -756,7 +756,9 @@ def simular_binom_neg(lam, n, k=DISPERSION_K):
 
 LINEAS_TT = [2.5, 3.5, 4.5, 5.5]   # totales por equipo (team totals)
 N_MARCADORES = 5                    # top de marcadores mas probables
-TOPE_DIST = 20                      # ultimo bin de la distribucion del total (agrupa '20 o mas')
+TOPE_DIST = 24                      # ultimo bin de la distribucion del total (agrupa 'N o mas').
+                                    # 24 deja la cola residual en ~1% incluso en juegos de
+                                    # scoring alto: asi el ultimo bin no 'rebota' en la grafica
 
 # --- NRFI / YRFI (primera entrada) ---
 FACTOR_INN1 = 1.12       # la 1ra entrada anota ~10-15% mas que la entrada promedio:
