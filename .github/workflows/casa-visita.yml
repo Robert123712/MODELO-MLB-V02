@@ -1,0 +1,22 @@
+# Experimento: ¿lanzar en casa es habilidad del pitcher o es el parque?
+# Se dispara a mano desde Actions y deja el veredicto en el log.
+name: Analisis casa vs visita
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python analisis_casa_visita.py
