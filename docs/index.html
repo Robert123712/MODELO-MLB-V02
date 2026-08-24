@@ -515,6 +515,22 @@ function momioCasa(p) {
 }
 const fx = (v, n=2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(n);
 
+/* Contexto del juego: solo se muestra lo que se aparta de lo normal, para
+   que la tarjeta no se llene de "1.000". */
+function contexto(g) {
+  const partes = [];
+  if (g.clima && Math.abs(g.clima - 1) > 0.005) {
+    partes.push(`${g.clima > 1 ? '🌡 calor' : '🌡 frío'} ${((g.clima - 1) * 100).toFixed(0)}%`);
+  }
+  const fat = Math.max(g.fatiga_v ?? 1, g.fatiga_c ?? 1);
+  if (fat > 1.02) partes.push('😮‍💨 bullpen cargado');
+  const lu = [g.lineup_v ?? 1, g.lineup_c ?? 1];
+  if (g.hay_lineup && lu.some(x => Math.abs(x - 1) > 0.015)) {
+    partes.push('📋 lineup ' + (lu.some(x => x < 0.985) ? 'debilitado' : 'completo'));
+  }
+  return partes.length ? ' · ' + partes.join(' · ') : '';
+}
+
 /* Histograma de la distribución simulada del total.
    Es la salida cruda del Monte Carlo: las tablas dan probabilidades puntuales,
    esto muestra la FORMA — el pico, la asimetría y la cola derecha que
@@ -715,7 +731,7 @@ function cardJuego(g) {
       <div class="mid">
         <div class="lam">${fx(g.lam_v)} — ${fx(g.lam_c)}</div>
         <div class="lamlbl">Carreras esperadas</div>
-        <div class="park">Total ${fx(totalEsp)} · Park ${fx(g.park)}</div>
+        <div class="park">Total ${fx(totalEsp)} · Park ${fx(g.park)}${contexto(g)}</div>
       </div>
       <div class="team home">
         <span class="tag">Casa</span>

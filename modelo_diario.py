@@ -11,7 +11,7 @@ import statsapi
 import numpy as np
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 
 import valor  # modulo #2
 
@@ -23,7 +23,12 @@ except Exception:
 
 # ---------------- CONSTANTES ----------------
 LIGA_FIP = 4.15
-HFA = 1.04
+# Ventaja de local REPARTIDA: la casa anota x HFA y la visita anota / HFA.
+# Antes solo inflaba la ofensiva local y el modelo daba 51.9% de victoria local
+# cuando la realidad de 552 juegos validados fue 54.5% (la liga historica anda
+# en ~54%). Repartirla dobla el efecto sobre el ML sin mover el total del juego,
+# que ya estaba bien calibrado (bias -0.08). Calibrado a p_casa ~54%.
+HFA = 1.045
 N_SIMS = 50_000
 LINEAS = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
 LINEAS_F5 = [3.5, 4.5, 5.5]          # totales de las primeras 5 entradas
@@ -58,6 +63,7 @@ SHRINK_IP_REC = 20   # IP a las que el FIP reciente gana la mitad de su peso max
 # promedio. Sale temprano por limite de pitcheos, de ahi las IP bajas.
 FIP_REEMPLAZO = 4.80
 IP_REEMPLAZO = 4.5
+PARK_PITCHER_TOPE = 0.08   # +/-8%: tope de la correccion por parques donde lanzo
 LIGA_K9 = 8.80       # ponches por 9 innings (promedio MLB 2025-26)
 LIGA_BB9 = 3.20      # bases por bolas por 9 innings
 
@@ -253,6 +259,25 @@ def datos_pitcher(nombre):
         ip_esp = sum(ips) / len(ips) if ips else 5.0
         ip_esp = max(3.5, min(ip_esp, 7.0))
 
+        # Park factor promedio de los estadios donde lanzo, ponderado por IP.
+        # La ofensiva ya se park-ajusta; el pitcheo no lo hacia, asi que el FIP
+        # de un abridor de Colorado se leia como falta de talento y el de uno de
+        # San Francisco como sobra. El gameLog ya esta descargado: sale gratis.
+        park_ip, ip_total_log = 0.0, 0.0
+        for g in log_splits:
+            ip_j = ip_a_decimal(g["stat"].get("inningsPitched", 0))
+            if ip_j <= 0:
+                continue
+            propio = (g.get("team") or {}).get("name")
+            rival = (g.get("opponent") or {}).get("name")
+            sede = propio if g.get("isHome") else rival
+            park_ip += PARK.get(sede, 1.00) * ip_j
+            ip_total_log += ip_j
+        park_medio = park_ip / ip_total_log if ip_total_log > 0 else 1.00
+        # Tope: con pocas aperturas el promedio puede quedar en un extremo y la
+        # correccion se volveria mas ruido que senal.
+        park_medio = max(1 - PARK_PITCHER_TOPE, min(park_medio, 1 + PARK_PITCHER_TOPE))
+
         # FIP reciente: ultimas 3 salidas con >= 1 IP, ponderado por IP de cada
         # salida (agregar los innings es el pooling correcto; el promedio simple
         # dejaba que una salida de 1.2 IP pesara igual que una de 7)
@@ -276,6 +301,7 @@ def datos_pitcher(nombre):
             "k9": k9, "bb9": bb9, "baa": baa,
             "fip_reciente": fip_reciente,
             "ip_temp": ip_temp, "ip_reciente": ip_reciente,
+            "park_medio": park_medio,
         })
     except Exception as e:
         print(f"⚠ Error con pitcher {nombre}: {e}")
@@ -306,10 +332,163 @@ def fip_blend(p):
         return p["fip"]
     fip_temp = (p["fip"] * ip + LIGA_FIP * SHRINK_IP) / (ip + SHRINK_IP)
     if p.get("fip_reciente") is None:
-        return fip_temp
+        return _park_neutral(fip_temp, p)
     ip_rec = p.get("ip_reciente") or 0.0
     w = PESO_FIP_RECIENTE * ip_rec / (ip_rec + SHRINK_IP_REC)
-    return fip_temp * (1 - w) + p["fip_reciente"] * w
+    return _park_neutral(fip_temp * (1 - w) + p["fip_reciente"] * w, p)
+
+# ---------------- CLIMA ----------------
+# El aire caliente es menos denso: la pelota vuela mas lejos. Es fisica, no
+# folclor — la distancia de un batazo crece ~0.5-0.8% por cada 10 grados F.
+#
+# NO se modela el viento: su efecto depende de la ORIENTACION del estadio
+# (a favor en Wrigley vale ~1.5 carreras, en contra las quita) y no tenemos
+# los rumbos home->jardin central verificados. Meterlo con orientaciones
+# aproximadas seria peor que no meterlo: ruido con cara de senal.
+
+TEMP_REF_F = 70.0        # temperatura de referencia
+TEMP_PESO = 0.004        # ~+4% de carreras por cada 10 grados F arriba
+TEMP_TOPE = 0.05         # +/-5% maximo
+
+# Estadios con techo (retractil o fijo): el clima exterior no aplica.
+# Con techo retractil se asume cerrado, que es lo comun cuando hay frio o lluvia.
+TECHO = {
+    "Tampa Bay Rays", "Toronto Blue Jays", "Milwaukee Brewers", "Houston Astros",
+    "Texas Rangers", "Arizona Diamondbacks", "Miami Marlins", "Seattle Mariners",
+}
+
+# lat/lon de cada sede, para pedirle el pronostico a Open-Meteo (gratis, sin key)
+SEDES = {
+    "Arizona Diamondbacks": (33.445, -112.067), "Atlanta Braves": (33.891, -84.468),
+    "Baltimore Orioles": (39.284, -76.622), "Boston Red Sox": (42.346, -71.097),
+    "Chicago Cubs": (41.948, -87.655), "Chicago White Sox": (41.830, -87.634),
+    "Cincinnati Reds": (39.097, -84.507), "Cleveland Guardians": (41.496, -81.685),
+    "Colorado Rockies": (39.756, -104.994), "Detroit Tigers": (42.339, -83.049),
+    "Houston Astros": (29.757, -95.355), "Kansas City Royals": (39.051, -94.480),
+    "Los Angeles Angels": (33.800, -117.883), "Los Angeles Dodgers": (34.074, -118.240),
+    "Miami Marlins": (25.778, -80.220), "Milwaukee Brewers": (43.028, -87.971),
+    "Minnesota Twins": (44.982, -93.278), "New York Mets": (40.757, -73.846),
+    "New York Yankees": (40.829, -73.926), "Athletics": (39.541, -119.802),
+    "Philadelphia Phillies": (39.906, -75.166), "Pittsburgh Pirates": (40.447, -80.006),
+    "San Diego Padres": (32.707, -117.157), "San Francisco Giants": (37.778, -122.389),
+    "Seattle Mariners": (47.591, -122.332), "St. Louis Cardinals": (38.622, -90.193),
+    "Tampa Bay Rays": (27.768, -82.653), "Texas Rangers": (32.747, -97.084),
+    "Toronto Blue Jays": (43.641, -79.389), "Washington Nationals": (38.873, -77.007),
+}
+
+_cache_clima = {}
+
+
+def factor_clima(nombre_casa, hoy):
+    """Multiplicador de carreras por temperatura. 1.0 con techo o sin datos."""
+    if nombre_casa in TECHO:
+        return 1.0
+    clave = (nombre_casa, hoy)
+    if clave in _cache_clima:
+        return _cache_clima[clave]
+    coords = SEDES.get(nombre_casa)
+    factor = 1.0
+    if coords:
+        try:
+            import json as _json
+            import urllib.request
+            mm, dd, yyyy = hoy.split("/")
+            lat, lon = coords
+            url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+                   f"&daily=temperature_2m_max&temperature_unit=fahrenheit"
+                   f"&start_date={yyyy}-{mm}-{dd}&end_date={yyyy}-{mm}-{dd}&timezone=auto")
+            with urllib.request.urlopen(url, timeout=10) as r:
+                data = _json.load(r)
+            temps = data.get("daily", {}).get("temperature_2m_max") or []
+            if temps and temps[0] is not None:
+                # el maximo diario aproxima la temperatura de un juego de tarde/noche
+                factor = 1 + TEMP_PESO * (float(temps[0]) - TEMP_REF_F)
+                factor = max(1 - TEMP_TOPE, min(factor, 1 + TEMP_TOPE))
+        except Exception as e:
+            print(f"⚠ Clima de {nombre_casa}: sin datos, se usa neutro ({e})")
+    _cache_clima[clave] = factor
+    return factor
+
+
+# ---------------- FATIGA DEL BULLPEN ----------------
+# El modelo usaba el FIP de temporada del bullpen, pero un bullpen que tiro 6
+# entradas ayer NO es el mismo hoy: los mejores brazos no estan disponibles y
+# el manager tiene que usar al relevista largo. Se mide con las entradas de
+# relevo de los ultimos 2 dias.
+
+BULLPEN_IP_TIPICO = 3.4    # entradas de relevo en un juego normal
+FATIGA_PESO = 0.030        # cuanto degrada el FIP cada entrada de exceso
+FATIGA_TOPE = 0.07         # +/-7% maximo
+
+_cache_boxscore = {}       # game_id -> boxscore (dos equipos comparten llamada)
+_cache_fatiga = {}         # (equipo, hoy) -> factor
+
+
+def _bullpen_ip_juego(game_id, tid):
+    """Entradas que tiro el BULLPEN de ese equipo en ese juego (todos menos el
+    abridor). None si el boxscore no esta disponible."""
+    if game_id not in _cache_boxscore:
+        try:
+            _cache_boxscore[game_id] = statsapi.get("game_boxscore", {"gamePk": game_id})
+        except Exception:
+            _cache_boxscore[game_id] = None
+    bx = _cache_boxscore[game_id]
+    if not bx:
+        return None
+    for lado in ("home", "away"):
+        eq = bx.get("teams", {}).get(lado, {})
+        if (eq.get("team") or {}).get("id") != tid:
+            continue
+        lanzadores = eq.get("pitchers", [])      # en orden de uso: el 1o es el abridor
+        jugadores = eq.get("players", {})
+        total = 0.0
+        for pid in lanzadores[1:]:
+            st = jugadores.get(f"ID{pid}", {}).get("stats", {}).get("pitching", {})
+            total += ip_a_decimal(st.get("inningsPitched", 0))
+        return total
+    return None
+
+
+def factor_fatiga_bullpen(nombre_equipo, hoy):
+    """Multiplicador sobre el FIP del bullpen segun su carga reciente.
+    > 1 = bullpen quemado (peor). < 1 = descansado."""
+    clave = (nombre_equipo, hoy)
+    if clave in _cache_fatiga:
+        return _cache_fatiga[clave]
+    tid = _team_id(nombre_equipo)
+    factor = 1.0
+    if tid is not None:
+        try:
+            hoy_d = datetime.strptime(hoy, "%m/%d/%Y").date()
+            carga = 0.0
+            for j in reversed(_team_schedule(tid, hoy)):
+                if j.get("status") != "Final":
+                    continue
+                dias = (hoy_d - datetime.strptime(j["game_date"], "%Y-%m-%d").date()).days
+                if dias < 1:
+                    continue
+                if dias > 2:
+                    break            # el schedule viene en orden: ya no hay nada util
+                ip = _bullpen_ip_juego(j["game_id"], tid)
+                if ip is None:
+                    continue
+                carga += ip * (1.0 if dias == 1 else 0.5)
+            tipico = BULLPEN_IP_TIPICO * 1.5      # ayer completo + medio antier
+            factor = 1 + FATIGA_PESO * (carga - tipico)
+            factor = max(1 - FATIGA_TOPE, min(factor, 1 + FATIGA_TOPE))
+        except Exception as e:
+            print(f"⚠ Fatiga de bullpen de {nombre_equipo}: sin datos ({e})")
+    _cache_fatiga[clave] = factor
+    return factor
+
+
+def _park_neutral(fip, p):
+    """Lleva el FIP a contexto NEUTRO dividiendo entre el park medio de sus
+    aperturas. Despues la lambda vuelve a multiplicar por el park de HOY, asi
+    que el estadio entra una sola vez (igual que en la ofensiva)."""
+    pm = p.get("park_medio") or 1.00
+    return fip / pm if pm > 0 else fip
+
 
 def carreras_por_juego(nombre_equipo, hoy):
     """#3+: carreras/juego del equipo, con dos correcciones anti-ruido:
@@ -405,6 +584,64 @@ def bullpen_stats(nombre_equipo):
             print(f"⚠ Bullpen de {nombre_equipo}: sin datos, usando promedio de liga ({e})")
     cache_bullpen[nombre_equipo] = bp
     return bp
+
+# ---------------- OFENSIVA SEGUN EL LINEUP DE HOY ----------------
+# carreras_por_juego() da el nivel TIPICO del equipo, pero no sabe si hoy
+# descansan tres titulares o si volvio el bateador estrella. Este factor mide
+# la DESVIACION del lineup de hoy respecto al promedio del equipo, usando el
+# OPS de los 9 que si van a jugar, ponderado por turnos segun el puesto en el
+# orden. Al ser desviacion (lineup_hoy / equipo_temporada) no duplica el nivel
+# del equipo que ya trae rg: solo dice "hoy juegan mejores o peores que su
+# promedio". Solo aplica cuando el lineup ya se publico (~1-3h antes).
+
+LINEUP_TOPE = 0.10       # +/-10%: ni el mejor ni el peor lineup mueve mas que esto
+_cache_ops_equipo = {}
+
+
+def ops_equipo(nombre_equipo):
+    """OPS de temporada del equipo. Es la referencia contra la que se compara
+    el lineup del dia."""
+    if nombre_equipo in _cache_ops_equipo:
+        return _cache_ops_equipo[nombre_equipo]
+    tid = _team_id(nombre_equipo)
+    ops = None
+    if tid is not None:
+        try:
+            d = statsapi.get("team_stats", {"teamId": tid, "stats": "season",
+                                            "group": "hitting", "season": TEMPORADA,
+                                            "gameType": "R"})
+            ops = _float_seguro(d["stats"][0]["splits"][0]["stat"].get("ops"))
+        except Exception:
+            pass
+    _cache_ops_equipo[nombre_equipo] = ops
+    return ops
+
+
+def factor_lineup(nombre_equipo, bateadores):
+    """Multiplicador por la calidad del lineup publicado hoy vs el tipico del
+    equipo. 1.0 si no hay alineacion o faltan datos."""
+    if not bateadores:
+        return 1.0
+    ref = ops_equipo(nombre_equipo)
+    if not ref or ref <= 0:
+        return 1.0
+    suma_ops, suma_pa = 0.0, 0.0
+    for b in bateadores:
+        ops = _float_seguro(b.get("ops_season"))
+        if ops is None or ops <= 0:
+            continue
+        # el primer bate ve mas turnos que el noveno: pesan distinto
+        pa = PA_POR_ORDEN.get(b.get("orden"), 4.2)
+        suma_ops += ops * pa
+        suma_pa += pa
+    if suma_pa <= 0:
+        return 1.0
+    ops_hoy = suma_ops / suma_pa
+    # El OPS es mas sensible que las carreras: se amortigua a la mitad para no
+    # sobre-reaccionar a un dia de descanso de un titular.
+    crudo = 1 + 0.5 * (ops_hoy / ref - 1)
+    return max(1 - LINEUP_TOPE, min(crudo, 1 + LINEUP_TOPE))
+
 
 def split_ofensivo(nombre_equipo, mano):
     """#3: multiplicador de la ofensiva segun la mano del abridor rival (OPS vs LHP/RHP)."""
@@ -626,8 +863,14 @@ def predecir_hits(avg_season, pitcher_baa, split_team, park_factor, avg_7d=None,
 _cache_linescore = {}  # game_id -> linescore
 
 def _frac_f5_de_juego(linescore):
+    """Fraccion de carreras del juego que cayeron en las primeras 5 entradas.
+
+    Solo juegos de EXACTAMENTE 9 entradas: los de extra innings meten carreras
+    en el denominador que no existen en un juego de 9, y desinflaban la
+    fraccion. La validacion detecto el sintoma: los totales de F5 salian 0.32
+    carreras por debajo de lo real de forma consistente."""
     inn = linescore.get("innings", [])
-    if len(inn) < 5:
+    if len(inn) != 9:
         return None
     f5 = sum(
         (inn[i].get("home", {}).get("runs", 0) or 0)
@@ -694,15 +937,59 @@ def f5_frac_liga(hoy=None):
     return _cache_f5_frac
 
 
+# ---------------- VUELTAS AL ORDEN (times through the order) ----------------
+# Un abridor empeora cada vez que enfrenta al lineup: los bateadores lo van
+# viendo. Entre la 1a y la 3a vuelta hay ~0.6 carreras/9 de diferencia, y es de
+# los efectos mas documentados del beisbol moderno (por eso los managers sacan
+# al abridor en la 6a aunque vaya bien).
+#
+# Importa para F5 vs juego completo: en 5 entradas el abridor apenas entra a su
+# 3a vuelta, mientras que en el juego completo esas entradas malas SI cuentan.
+# Antes el modelo le aplicaba un FIP plano a todas sus entradas.
+TTO_AJUSTE = (-0.28, 0.0, 0.32, 0.55)   # ajuste al FIP en las vueltas 1, 2, 3, 4+
+INN_POR_VUELTA = 2.15                    # 9 bateadores a ~4.2 por entrada
+IP_REFERENCIA = 5.5                      # duracion tipica de una apertura
+
+
+def _ajuste_tto(desde, hasta):
+    """Ajuste promedio por vuelta al orden en el tramo de entradas [desde, hasta)."""
+    if hasta <= desde:
+        return 0.0
+    suma, paso, x = 0.0, 0.05, desde
+    while x < hasta - 1e-9:
+        tramo = min(paso, hasta - x)
+        vuelta = min(int(x // INN_POR_VUELTA), len(TTO_AJUSTE) - 1)
+        suma += TTO_AJUSTE[vuelta] * tramo
+        x += paso
+    return suma / (hasta - desde)
+
+
+# El FIP de temporada YA promedia todas las vueltas de una apertura tipica. Si
+# aplicaramos el ajuste crudo moveriamos el nivel global de carreras y habria
+# que recalibrar AJUSTE_BASE. Se centra en la apertura de referencia para que
+# el efecto sea puramente relativo (que tramo de entradas se esta evaluando).
+_TTO_CENTRO = _ajuste_tto(0.0, IP_REFERENCIA)
+
+
+def fip_abridor_tramo(fip, desde, hasta):
+    """FIP efectivo del abridor en las entradas [desde, hasta), por vuelta al orden."""
+    return fip + _ajuste_tto(desde, hasta) - _TTO_CENTRO
+
+
 def fip_combinado(fip_abridor, ip_abridor, era_bullpen):
-    return (fip_abridor * ip_abridor + era_bullpen * (9 - ip_abridor)) / 9
+    """Pitcheo que enfrenta el rival en las 9 entradas: el abridor con su
+    penalizacion por vuelta, y el bullpen cubriendo el resto."""
+    fip_sp = fip_abridor_tramo(fip_abridor, 0.0, ip_abridor)
+    return (fip_sp * ip_abridor + era_bullpen * (9 - ip_abridor)) / 9
 
 def fip_f5(fip_abridor, ip_abridor, era_bullpen):
     """#F5: pitcheo que enfrenta el bateador en las primeras 5 entradas.
     El abridor cubre min(ip_esperadas, 5); si sale antes, el bullpen cubre el
-    resto de las 5. Domina fuertemente el abridor."""
+    resto de las 5. Domina fuertemente el abridor, y ademas son sus MEJORES
+    entradas: casi no alcanza la 3a vuelta al orden."""
     ip_en_f5 = min(ip_abridor, 5.0)
-    return (fip_abridor * ip_en_f5 + era_bullpen * (5.0 - ip_en_f5)) / 5.0
+    fip_sp = fip_abridor_tramo(fip_abridor, 0.0, ip_en_f5)
+    return (fip_sp * ip_en_f5 + era_bullpen * (5.0 - ip_en_f5)) / 5.0
 
 def multiplicador_pitcheo(fip_comb):
     """ARREGLO 2: amortigua el efecto del pitcheo hacia 1.0 en vez de lineal puro."""
@@ -770,7 +1057,8 @@ DISPERSION_K_INN = 0.38  # k de la binomial negativa POR ENTRADA. Mucho mas bajo
 
 def lambda_inning1(rg, split, mult_abridor_rival, def_rival, park, hfa=1.0):
     """Carreras esperadas de UN equipo en la 1ra entrada.
-    Solo lanza el abridor rival (sin bullpen) y batea el top del orden."""
+    Solo lanza el abridor rival (sin bullpen) y batea el top del orden.
+    'hfa' entra ya resuelto por el lado que corresponde (HFA o 1/HFA)."""
     return rg * split * mult_abridor_rival * def_rival * park * AJUSTE_BASE * hfa / 9.0 * FACTOR_INN1
 
 def prob_nrfi(lam1_v, lam1_c):
@@ -935,29 +1223,48 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
     rg_v = carreras_por_juego(visita, hoy)
     rg_c = carreras_por_juego(casa, hoy)
     park = PARK.get(casa, 1.00)
+    clima = factor_clima(casa, hoy)      # ambos equipos comparten estadio y clima
+    ambiente = park * clima
     split_v = split_ofensivo(visita, mano_c)   # la ofensiva visitante vs la mano del abridor local
     split_c = split_ofensivo(casa, mano_v)
-    bp_v, bp_c = bullpen_stats(visita), bullpen_stats(casa)
+    # Lineup del dia: si ya se publico, ajusta la ofensiva por quien SI juega
+    lineup = alineacion_juego(juego.get("game_id"), None) if juego.get("game_id") else None
+    lu_v = factor_lineup(visita, (lineup or {}).get("away"))
+    lu_c = factor_lineup(casa, (lineup or {}).get("home"))
+    hay_lineup = bool(lineup and ((lineup.get("away") or []) or (lineup.get("home") or [])))
+
+    bp_v, bp_c = dict(bullpen_stats(visita)), dict(bullpen_stats(casa))
     def_v, def_c = factor_defensivo(visita), factor_defensivo(casa)
+
+    # Bullpen quemado = peor bullpen hoy, aunque su FIP de temporada sea bueno
+    fat_v = factor_fatiga_bullpen(visita, hoy)
+    fat_c = factor_fatiga_bullpen(casa, hoy)
+    bp_v["fip"] *= fat_v
+    bp_c["fip"] *= fat_c
 
     # El pitcheo/defensa de un equipo deprime la ofensiva del OTRO
     pitcheo_c = fip_combinado(fip_c, ip_c, bp_c["fip"])
     pitcheo_v = fip_combinado(fip_v, ip_v, bp_v["fip"])
-    lam_v = rg_v * split_v * multiplicador_pitcheo(pitcheo_c) * def_c * park * AJUSTE_BASE
-    lam_c = rg_c * split_c * multiplicador_pitcheo(pitcheo_v) * def_v * park * AJUSTE_BASE * HFA
+    lam_v = rg_v * split_v * lu_v * multiplicador_pitcheo(pitcheo_c) * def_c * ambiente * AJUSTE_BASE / HFA
+    lam_c = rg_c * split_c * lu_c * multiplicador_pitcheo(pitcheo_v) * def_v * ambiente * AJUSTE_BASE * HFA
 
     sim = simular_completo(lam_v, lam_c)
 
     # F5: mismos factores, pero el abridor domina y la ofensiva se escala
     pitcheo_c_f5 = fip_f5(fip_c, ip_c, bp_c["fip"])
     pitcheo_v_f5 = fip_f5(fip_v, ip_v, bp_v["fip"])
-    lam_v_f5 = rg_v * split_v * frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * park * AJUSTE_BASE
-    lam_c_f5 = rg_c * split_c * frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * park * AJUSTE_BASE * HFA
+    lam_v_f5 = rg_v * split_v * lu_v * frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * ambiente * AJUSTE_BASE / HFA
+    lam_c_f5 = rg_c * split_c * lu_c * frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * ambiente * AJUSTE_BASE * HFA
     overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
 
     # NRFI/YRFI: 1ra entrada, solo el abridor (el bullpen no participa)
-    l1_v = lambda_inning1(rg_v, split_v, multiplicador_pitcheo(fip_c), def_c, park)
-    l1_c = lambda_inning1(rg_c, split_c, multiplicador_pitcheo(fip_v), def_v, park, HFA)
+    # En la 1a entrada el abridor esta en su MEJOR vuelta al orden
+    l1_v = lambda_inning1(rg_v, split_v * lu_v,
+                          multiplicador_pitcheo(fip_abridor_tramo(fip_c, 0.0, 1.0)),
+                          def_c, ambiente, 1 / HFA)
+    l1_c = lambda_inning1(rg_c, split_c * lu_c,
+                          multiplicador_pitcheo(fip_abridor_tramo(fip_v, 0.0, 1.0)),
+                          def_v, ambiente, HFA)
 
     r = {
         "visita": visita, "casa": casa,
@@ -966,8 +1273,10 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
         "fip_v": fip_v, "fip_c": fip_c, "ip_v": ip_v, "ip_c": ip_c,
         "mano_v": mano_v, "mano_c": mano_c,
         "bp_v": bp_v, "bp_c": bp_c,
+        "fatiga_v": fat_v, "fatiga_c": fat_c,
         "rg_v": rg_v, "rg_c": rg_c, "split_v": split_v, "split_c": split_c,
-        "park": park, "def_v": def_v, "def_c": def_c,
+        "park": park, "clima": clima, "def_v": def_v, "def_c": def_c,
+        "lineup_v": lu_v, "lineup_c": lu_c, "hay_lineup": hay_lineup,
         "lam_v": lam_v, "lam_c": lam_c, "total_esp": lam_v + lam_c,
         "overs": sim["overs"], "p_casa": sim["p_casa"], "p_visita": 1 - sim["p_casa"],
         "p_casa_rl": sim["p_casa_rl"], "p_visita_rl": 1 - sim["p_casa_rl"],
@@ -986,7 +1295,7 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
     }
     if con_bateo:
         r["bateo"] = predecir_hits_juego(visita, casa, juego.get("game_id"),
-                                         pv, pc, park, split_v, split_c)
+                                         pv, pc, park, split_v, split_c)   # usa el mismo cache
     return r
 
 
@@ -1052,7 +1361,10 @@ def correr(fecha=None):
               f"{casa} FIP {r['bp_c']['fip']:.2f} K/BB {r['bp_c']['k9']:.1f}/{r['bp_c']['bb9']:.1f}")
         print(f"Ofensivas: {visita} {r['rg_v']:.2f}x{r['split_v']:.2f} | "
               f"{casa} {r['rg_c']:.2f}x{r['split_c']:.2f} R/G | Park {r['park']}")
-        print(f"Factores: DEF {r['def_c']:.3f}/{r['def_v']:.3f}")
+        print(f"Factores: DEF {r['def_c']:.3f}/{r['def_v']:.3f} | "
+              f"CLIMA {r['clima']:.3f} | FATIGA bp {r['fatiga_v']:.3f}/{r['fatiga_c']:.3f} | "
+              f"LINEUP {r['lineup_v']:.3f}/{r['lineup_c']:.3f}"
+              f"{'' if r['hay_lineup'] else ' (sin alineacion publicada)'}")
         print(f"Carreras esp: {visita} {r['lam_v']:.2f} — {casa} {r['lam_c']:.2f} (total {r['total_esp']:.2f})")
         print(f"ML: {casa} {r['p_casa']:.1%} (justo {prob_a_momio(r['p_casa'])}, "
               f"casa ~{momio_mercado(r['p_casa'])}) | "
