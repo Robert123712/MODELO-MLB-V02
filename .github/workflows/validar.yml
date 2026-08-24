@@ -1,0 +1,37 @@
+# ============================================================
+# VALIDACION DE CALIBRACION
+# Corre validar.py sobre el historico acumulado y deja el reporte en el log
+# del job. Sirve para medir el efecto de cada cambio del modelo: se corre
+# ANTES de tocar nada y DESPUES, y se comparan Brier / log-loss / sesgo.
+# Se dispara a mano desde Actions, o los lunes para tener serie semanal.
+# ============================================================
+
+name: Validar calibracion
+
+on:
+  workflow_dispatch:
+    inputs:
+      desde:
+        description: "Validar desde esta fecha (mm/dd/YYYY). Vacio = todo el historico"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 15 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Validar
+        run: python validar.py ${{ inputs.desde }}
