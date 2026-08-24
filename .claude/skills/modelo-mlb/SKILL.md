@@ -120,6 +120,20 @@ Primera corrida de `validar.py` sobre 552 juegos:
 **Moraleja:** ningún parámetro se mueve por intuición. Se corre `validar.py`
 (workflow "Validar calibracion"), se lee el sesgo, y se ajusta.
 
+### ¿Lanzar en casa es habilidad del pitcher?
+
+Medido sobre **198 abridores** (`analisis_casa_visita.py`, park-ajustado):
+
+| Capa | Resultado | Qué se hizo |
+|---|---|---|
+| Efecto de **liga** | **−0.224 FIP** mejor en casa | Real. Lo aplica el HFA repartido (≈0.19 carreras — coincide dentro del 15%) |
+| Dispersión entre pitchers | σ = 1.18 FIP, rango −5.1 a +2.8 | Enorme… pero el azar produce dispersión igual |
+| **Persistencia** (mitades) | **r = −0.03** (n=190) | **Cero.** No es habilidad: no se modela por pitcher |
+
+Que un pitcher tenga números buenísimos en casa **no predice** que los repita.
+Modelarlo por pitcher sería meter ruido con cara de señal. El efecto de liga sí
+existe y ya está dentro.
+
 ## Errores estadísticos en los que este proyecto ya cayó
 
 Sirven como lista de verificación antes de agregar cualquier factor:
