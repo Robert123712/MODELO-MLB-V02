@@ -39,12 +39,18 @@ la interfaz, edita el template y regenera `docs/` — si no, se desincronizan.
 ## La tubería de cálculo
 
 ```
-λ_visita = rg_v × split_v × mult_pitcheo(casa)   × def_casa   × park × base
-λ_casa   = rg_c × split_c × mult_pitcheo(visita) × def_visita × park × base × HFA
+ambiente = park × clima
+λ_visita = rg_v × split_v × lineup_v × mult_pitcheo(casa)   × def_casa   × ambiente × base ÷ HFA
+λ_casa   = rg_c × split_c × lineup_c × mult_pitcheo(visita) × def_visita × ambiente × base × HFA
 ```
 
 El cruce es intencional: **el pitcheo y la defensa de un equipo deprimen la
-ofensiva del otro**. HFA solo va del lado local.
+ofensiva del otro**. El **HFA va repartido** (× de un lado, ÷ del otro): así
+mueve el moneyline sin tocar el total del juego.
+
+El pitcheo que entra en `mult_pitcheo` no es el FIP plano: se pondera por
+**vuelta al orden** (el abridor empeora cada vez que ve al lineup) y el bullpen
+se degrada por **fatiga** según lo que tiró en los últimos 2 días.
 
 De ahí, 50,000 simulaciones con **binomial negativa** (no Poisson: las carreras
 de béisbol tienen varianza > media; una Poisson subestima los blowouts) generan
@@ -63,6 +69,11 @@ NRFI usan la misma λ reescalada con su propia dispersión.
 | `PESO_OFENSIVA_RECIENTE` | 0.45 | Mezcla reciencia/temporada de la ofensiva |
 | `SHRINK_IP` | 60 | IP de regresión del FIP hacia la liga |
 | `FIP_REEMPLAZO` | 4.80 | Abridor sin stats de temporada |
+| `HFA` | 1.045 | Ventaja de local repartida. **Calibrado con la validación** |
+| `TTO_AJUSTE` | (-0.28, 0, .32, .55) | Penalización por vuelta al orden |
+| `TEMP_PESO` | 0.004 | Carreras por °F sobre 70 |
+| `FATIGA_PESO` | 0.030 | Degradación del bullpen por entrada de exceso |
+| `LINEUP_TOPE` | 0.10 | Tope del ajuste por alineación del día |
 
 **Nunca muevas una perilla "a ojo".** El camino correcto es correr `validar.py`
 sobre el histórico, ver el sesgo, y mover. `validar.py` ya sugiere ajustar
@@ -92,6 +103,23 @@ La conversión vive **solo en `modelo_diario.py`**; `generar_excel.py` la import
 El JS de las páginas tiene un espejo (`momio`/`momioCasa`) porque es formato de
 presentación: si cambias las reglas en Python, cámbialas también ahí.
 
+## Lo que la validación ya encontró (y por qué se mide antes de tocar)
+
+Primera corrida de `validar.py` sobre 552 juegos:
+
+- **El moneyline estaba peor que un volado** (Brier 0.252 > 0.250). Causa: el
+  modelo daba 51.9% de victoria local cuando la realidad fue 54.5%. El `HFA`
+  estaba subvalorado *y* mal modelado (solo inflaba la ofensiva local). Se
+  repartió a dos lados y se calibró a ~54%.
+- **Los totales de F5 salían 0.32 carreras bajos** de forma consistente. Causa:
+  `f5_frac_liga` incluía juegos de extra innings, cuyas carreras extra inflaban
+  el denominador. Ahora solo cuenta juegos de exactamente 9 entradas.
+- Los totales del juego completo estaban **bien** (bias -0.08): no se tocó
+  `AJUSTE_BASE`.
+
+**Moraleja:** ningún parámetro se mueve por intuición. Se corre `validar.py`
+(workflow "Validar calibracion"), se lee el sesgo, y se ajusta.
+
 ## Errores estadísticos en los que este proyecto ya cayó
 
 Sirven como lista de verificación antes de agregar cualquier factor:
@@ -106,7 +134,12 @@ Sirven como lista de verificación antes de agregar cualquier factor:
    ofensivo. `carreras_por_juego` ahora divide entre el park de la sede.
 4. **Perseguir rachas.** La reciencia pura hacía que el ML lo decidiera quién
    bateó bien esa semana, peleando contra el mercado por ruido propio.
-5. **Fallos silenciosos.** Un `except: pass` escondió durante semanas que los 30
+5. **Centrar los ajustes nuevos.** El FIP de temporada ya promedia todas las
+   vueltas al orden; aplicar el TTO crudo habría movido el nivel global de
+   carreras y roto la calibración. Se centra en una apertura de referencia para
+   que el efecto sea puramente relativo. **Todo factor nuevo debe ser neutral en
+   promedio**, o hay que recalibrar `AJUSTE_BASE`.
+6. **Fallos silenciosos.** Un `except: pass` escondió durante semanas que los 30
    bullpens tenían FIP idéntico (la API no expone `fip`; hay que calcularlo).
    **Los fallos de datos deben avisar en consola, no tragarse.**
 
