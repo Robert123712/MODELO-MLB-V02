@@ -25,6 +25,8 @@ from collections import defaultdict
 
 import statsapi
 
+from modelo_diario import calibrar_ml   # capa Platt del ML (identidad si esta apagada)
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
@@ -179,7 +181,7 @@ def validar(desde=None):
         return 1
 
     cache = _cargar_cache()
-    ml, over85, f5_casa, nrfi = [], [], [], []
+    ml, ml_crudo, over85, f5_casa, nrfi = [], [], [], [], []
     err_totales, err_f5 = [], []
     sin_resultado = 0
     fechas = sorted({p["fecha"] for p in predicciones}, key=_clave_fecha)
@@ -198,9 +200,10 @@ def validar(desde=None):
             gano_casa = 1 if real["rc"] > real["rv"] else 0
             total_real = real["rv"] + real["rc"]
 
-            p_casa = _f(p, "p_casa")
+            p_casa = _f(p, "p_casa")   # el CSV guarda la prob CRUDA del ML
             if p_casa is not None:
-                ml.append((p_casa, gano_casa))
+                ml_crudo.append((p_casa, gano_casa))
+                ml.append((calibrar_ml(p_casa), gano_casa))   # como sale ya calibrado
             p_o85 = _f(p, "p_over85")
             if p_o85 is not None and total_real != 8.5:
                 over85.append((p_o85, 1 if total_real > 8.5 else 0))
@@ -228,7 +231,9 @@ def validar(desde=None):
     print("=" * 64)
     print(f"Predicciones con resultado: {len(ml)} | sin resultado aun: {sin_resultado}")
 
-    _reporte_mercado("MONEYLINE (gana la casa)", ml, referencia="0.23")
+    _reporte_mercado("MONEYLINE (gana la casa, CALIBRADO)", ml, referencia="0.23")
+    if ml_crudo:
+        print(f"  (Brier CRUDO sin calibrar: {brier(ml_crudo):.4f} -> calibrado {brier(ml):.4f})")
     _reporte_mercado("TOTAL Over 8.5", over85)
     _reporte_mercado("F5 — gana la casa", f5_casa)
     _reporte_mercado("NRFI (1ª entrada sin carreras)", nrfi)

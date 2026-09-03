@@ -9,6 +9,7 @@
 
 import statsapi
 import numpy as np
+import math
 import os
 import sys
 from datetime import date, datetime
@@ -39,7 +40,32 @@ INICIO_TEMP = "03/25/2026"
 AMORTIGUA = 0.6      # 0 = ignora el pitcheo; 1 = efecto completo. 0.6 suaviza extremos
 DISPERSION_K = 4.0   # dispersion de la binomial negativa. Mas bajo = mas varianza/caos
 DISPERSION_K_F5 = 2.4  # F5: menos entradas -> mas varianza relativa -> k mas bajo
-AJUSTE_BASE = 0.94   # calibra el nivel global de carreras para promediar ~8.5 el slate
+AJUSTE_BASE = 0.961  # calibra el nivel global de carreras. Subido de 0.94 tras
+                     # medir sesgo -0.19 en 653 juegos (media 8.64 esp vs 8.83 real).
+                     # Solo mueve el NIVEL de totales; el moneyline se cancela.
+AJUSTE_F5 = 1.04     # nivel EXTRA para F5: tras centrar el juego completo, el F5
+                     # seguia -0.19 bajo (media 4.60 esp vs 4.90 real). Multiplica
+                     # ambas lambdas de F5 por igual: mueve el total F5, no su ML.
+
+# --- CAPA DE CALIBRACION DEL MONEYLINE ---
+# La probabilidad CRUDA de la simulacion (P(gana casa)) sale mal calibrada:
+# la validacion sobre 653 juegos mostro que subvalua al local y se sobre-confia
+# en los extremos (el tramo 0.65+ decia 67% y pego 44%). En vez de mover HFA o
+# la dispersion "a ojo" (romperia los totales, que SI estan bien calibrados),
+# se aplica una capa Platt sobre la probabilidad final del ML:
+#     p_cal = sigmoid(ML_CAL_A + ML_CAL_B * logit(p_cruda))
+#   A (intercepto) reubica el centro; B (pendiente) < 1 encoge la confianza.
+# A y B se ajustan con calibrar.py sobre el historico (con split temporal para
+# comprobar que generalizan) y se pegan aqui. NO se mueven a mano.
+# A=0, B=1 => identidad (sin calibrar). El CSV historico guarda la prob CRUDA
+# para que el ajuste se pueda re-medir sobre todo el historico.
+# Ajustados con calibrar.py (CV de 5 pliegues sobre 653 juegos). El ML crudo
+# esta SOBRECONFIADO: encoger la confianza baja el Brier fuera de muestra de
+# 0.2509 a ~0.2494. Se elige B=0.70 (suave) sobre el B=0.26 del mejor ajuste:
+# empatan fuera de muestra (0.2494 vs 0.2490) y el menos extremo generaliza
+# mejor. A=+0.10 recentra el promedio de local en el 53.9% real observado.
+ML_CAL_A = 0.10
+ML_CAL_B = 0.70
 # FRAC_F5 se calcula dinamicamente desde datos reales de la temporada
 # (carreras en innings 1-5 / carreras totales del juego)
 # El calculo se hace una vez y se cachea. Fallback si no hay datos: 0.62
@@ -180,6 +206,19 @@ def momio_mercado(p, vig=VIG_TIPICO):
     if m == 100:
         return "EVEN"
     return f"-{m}" if p_vig >= 0.5 else f"+{m}"
+
+def calibrar_ml(p, a=None, b=None):
+    """Capa Platt sobre la probabilidad cruda del moneyline (ver ML_CAL_A/B).
+    Devuelve la probabilidad CALIBRADA. Con A=0,B=1 es la identidad."""
+    a = ML_CAL_A if a is None else a
+    b = ML_CAL_B if b is None else b
+    if p <= 0.0 or p >= 1.0:
+        return p
+    if a == 0.0 and b == 1.0:
+        return p
+    z = math.log(p / (1.0 - p))
+    return 1.0 / (1.0 + math.exp(-(a + b * z)))
+
 
 # --- caches (#6) ---
 cache_pitcher = {}   # nombre -> dict con fip, ip_esp, mano, k9, bb9, fip_reciente
@@ -1253,8 +1292,8 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
     # F5: mismos factores, pero el abridor domina y la ofensiva se escala
     pitcheo_c_f5 = fip_f5(fip_c, ip_c, bp_c["fip"])
     pitcheo_v_f5 = fip_f5(fip_v, ip_v, bp_v["fip"])
-    lam_v_f5 = rg_v * split_v * lu_v * frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * ambiente * AJUSTE_BASE / HFA
-    lam_c_f5 = rg_c * split_c * lu_c * frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * ambiente * AJUSTE_BASE * HFA
+    lam_v_f5 = rg_v * split_v * lu_v * frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * ambiente * AJUSTE_BASE * AJUSTE_F5 / HFA
+    lam_c_f5 = rg_c * split_c * lu_c * frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * ambiente * AJUSTE_BASE * AJUSTE_F5 * HFA
     overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
 
     # NRFI/YRFI: 1ra entrada, solo el abridor (el bullpen no participa)
@@ -1278,7 +1317,12 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
         "park": park, "clima": clima, "def_v": def_v, "def_c": def_c,
         "lineup_v": lu_v, "lineup_c": lu_c, "hay_lineup": hay_lineup,
         "lam_v": lam_v, "lam_c": lam_c, "total_esp": lam_v + lam_c,
-        "overs": sim["overs"], "p_casa": sim["p_casa"], "p_visita": 1 - sim["p_casa"],
+        # p_casa CALIBRADA (capa Platt): es la mejor estimacion, la que se
+        # muestra y con la que valor.py calcula el EV. La cruda queda para
+        # auditoria y es la que correr() persiste en el CSV historico.
+        "overs": sim["overs"],
+        "p_casa": calibrar_ml(sim["p_casa"]), "p_visita": 1 - calibrar_ml(sim["p_casa"]),
+        "p_casa_cruda": sim["p_casa"],
         "p_casa_rl": sim["p_casa_rl"], "p_visita_rl": 1 - sim["p_casa_rl"],
         "tt_visita": sim["tt_visita"], "tt_casa": sim["tt_casa"],
         "marcadores": sim["marcadores"],
@@ -1396,7 +1440,9 @@ def correr(fecha=None):
         filas_csv.append(",".join([
             hoy, visita, casa, r["abridor_v"], r["abridor_c"],
             f"{r['lam_v']:.2f}", f"{r['lam_c']:.2f}", f"{r['total_esp']:.2f}",
-            f"{r['p_casa']:.3f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
+            # p_casa CRUDA en el CSV (no la calibrada): asi el historico mantiene
+            # la misma semantica y calibrar.py puede re-ajustar sobre todo el.
+            f"{r['p_casa_cruda']:.3f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
             f"{f5['total_esp']:.2f}", f"{f5['p_casa']:.3f}", f"{f5['p_empate']:.3f}",
             f"{f5['p_visita']:.3f}", f"{overs_f5[4.5]:.3f}",
             f"{f5['rl_casa']:.3f}", f"{f5['rl_visita']:.3f}",
