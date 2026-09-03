@@ -1,0 +1,35 @@
+# ============================================================
+# CALIBRACION DE PROBABILIDADES
+# Corre calibrar.py sobre el historico acumulado: ajusta la capa Platt del
+# moneyline (con split temporal para probar que generaliza) y sugiere el
+# AJUSTE_BASE que centra el sesgo de totales. Deja todo en el log del job.
+# Se dispara a mano desde Actions.
+# ============================================================
+
+name: Calibrar probabilidades
+
+on:
+  workflow_dispatch:
+    inputs:
+      desde:
+        description: "Calibrar desde esta fecha (mm/dd/YYYY). Vacio = todo el historico"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  calibrar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Calibrar
+        run: python calibrar.py ${{ inputs.desde }}
