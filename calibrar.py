@@ -84,6 +84,28 @@ def ajustar_platt(pares, iteraciones=50):
     return a, b
 
 
+def ajustar_intercepto(pares, b_fijo, iteraciones=50):
+    """Ajusta SOLO el intercepto A con la pendiente B fija (Newton 1D).
+    B=1 => solo corrige el centro (subvaluacion del local), sin tocar la
+    confianza. Es el ajuste de 1 parametro, mucho menos propenso a sobreajuste."""
+    zs = [_logit(p) for p, _ in pares]
+    ys = [y for _, y in pares]
+    a = 0.0
+    for _ in range(iteraciones):
+        g = h = 0.0
+        for z, y in zip(zs, ys):
+            mu = _sigmoid(a + b_fijo * z)
+            g += mu - y
+            h += mu * (1 - mu)
+        if h < 1e-12:
+            break
+        da = g / h
+        a -= da
+        if abs(da) < 1e-9:
+            break
+    return a
+
+
 def _brier(pares):
     return sum((p - y) ** 2 for p, y in pares) / len(pares)
 
@@ -138,29 +160,56 @@ def _cargar_pares(desde=None):
     return ml, f5, (tot_pred, tot_real), (f5_pred, f5_real)
 
 
-def _reporte_calibracion(nombre, pares, frac_train=0.7):
+def _cv_brier(pares, ajustador, k=5):
+    """Brier PROMEDIO fuera de muestra por validacion cruzada de k pliegues.
+    'ajustador' recibe el train de cada pliegue y devuelve (A, B); se evalua en
+    el pliegue retenido. Baraja de forma determinista para no depender del orden."""
+    idx = list(range(len(pares)))
+    # barajado determinista (sin semilla externa): intercala por resto
+    idx.sort(key=lambda i: (i * 2654435761) % len(pares))
+    folds = [idx[j::k] for j in range(k)]
+    err = 0.0
+    for j in range(k):
+        test_i = set(folds[j])
+        train = [pares[i] for i in idx if i not in test_i]
+        test = [pares[i] for i in folds[j]]
+        a, b = ajustador(train)
+        err += sum((_sigmoid(a + b * _logit(p)) - y) ** 2 for p, y in test)
+    return err / len(pares)
+
+
+def _reporte_calibracion(nombre, pares):
     if len(pares) < 60:
         print(f"\n{nombre}: muestra chica ({len(pares)}), no se ajusta.")
         return None
-    corte = int(len(pares) * frac_train)
-    train, test = pares[:corte], pares[corte:]
 
-    a_tr, b_tr = ajustar_platt(train)          # ajuste honesto: solo con train
-    a_full, b_full = ajustar_platt(pares)      # el que se usaria en produccion
+    base = _brier(pares)
+    print(f"\n{nombre}  (n={len(pares)})   Brier crudo = {base:.4f}")
+    print("  Validacion cruzada de 5 pliegues (Brier fuera de muestra):")
 
-    print(f"\n{nombre}  (n={len(pares)}; train={len(train)}, test={len(test)})")
-    print(f"  Ajuste (train):   A={a_tr:+.4f}  B={b_tr:.4f}")
-    print(f"  Ajuste (todo):    A={a_full:+.4f}  B={b_full:.4f}   <- pegar en modelo_diario.py")
+    opciones = []   # (etiqueta, ajustador_full, cv)
+    # 1) intercepto solo (B fijo): corrige el CENTRO, 1 parametro
+    for b in (1.0, 0.85, 0.70):
+        aj = (lambda bb: (lambda tr: (ajustar_intercepto(tr, bb), bb)))(b)
+        cv = _cv_brier(pares, aj)
+        a_full = ajustar_intercepto(pares, b)
+        opciones.append((f"A libre, B={b:.2f}", a_full, b, cv))
+    # 2) ajuste completo (A y B libres): 2 parametros
+    cv_full = _cv_brier(pares, ajustar_platt)
+    a2, b2 = ajustar_platt(pares)
+    opciones.append(("A y B libres", a2, b2, cv_full))
 
-    def linea(etq, ps):
-        cal = _aplicar(ps, a_tr, b_tr)
-        print(f"  {etq:16s} Brier {_brier(ps):.4f} -> {_brier(cal):.4f}   "
-              f"log-loss {_logloss(ps):.4f} -> {_logloss(cal):.4f}")
+    mejor = min(opciones, key=lambda o: o[3])
+    for etq, a, b, cv in opciones:
+        gana = "  <- mejor" if (etq, a, b, cv) == mejor else ""
+        signo = "MEJORA" if cv < base else "peor  "
+        print(f"    {etq:16s} A={a:+.3f} B={b:.2f}   CV Brier {cv:.4f} ({signo} vs {base:.4f}){gana}")
 
-    print("  Efecto de la capa ajustada en TRAIN sobre cada bloque:")
-    linea("  train (in)", train)
-    linea("  test (out)", test)    # <- la prueba que importa: fuera de muestra
-    return a_full, b_full
+    if mejor[3] < base - 0.0005:   # margen minimo para no perseguir ruido
+        print(f"  -> USAR: ML_CAL_A={mejor[1]:+.4f}  ML_CAL_B={mejor[2]:.4f}")
+        return mejor[1], mejor[2]
+    print("  -> NINGUNA capa mejora fuera de muestra de forma robusta. Dejar identidad (A=0, B=1).")
+    return 0.0, 1.0
 
 
 def _reporte_totales(nombre, pred, real, base_actual):
