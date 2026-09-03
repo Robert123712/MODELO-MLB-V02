@@ -28,7 +28,8 @@ estuvo copiada 6 veces y eso ya causó un bug de variables cruzadas entre juegos
 | `docs/index.html` | **Generado desde el template**; carga `docs/data/latest.json` para GitHub Pages |
 | `generar_json.py` | Escribe el snapshot que consume la página pública |
 | `generar_excel.py` | Exporta el slate a Excel (3 hojas) |
-| `validar.py` | Calibración del histórico: Brier, log-loss, curva, MAE/bias |
+| `validar.py` | Calibración del histórico: Brier, log-loss, curva, MAE/bias (puntúa el ML ya calibrado) |
+| `calibrar.py` | Ajusta la capa Platt del ML (CV de 5 pliegues) y sugiere `AJUSTE_BASE`. Corre en el workflow de validación |
 | `analisis_comparacion.py` | Backtest juego por juego de una fecha |
 | `tracker.py` | Diario de apuestas: registro, calificación, ROI (`apuestas.csv` NO se versiona) |
 
@@ -65,7 +66,9 @@ NRFI usan la misma λ reescalada con su propia dispersión.
 | `DISPERSION_K` | 4.0 | Dispersión de la binomial negativa. Menor = más varianza |
 | `DISPERSION_K_F5` | 2.4 | Igual para F5 (menos entradas ⇒ más varianza relativa) |
 | `DISPERSION_K_INN` | 0.38 | Por entrada, calibrada a ~52% NRFI de liga |
-| `AJUSTE_BASE` | 0.94 | Nivel global; se ajusta para promediar ~8.5 carreras/slate |
+| `AJUSTE_BASE` | 0.961 | Nivel global; solo mueve totales (el ML se cancela). Subido de 0.94 tras medir sesgo -0.19 en 653 juegos |
+| `AJUSTE_F5` | 1.04 | Nivel EXTRA de F5: tras centrar el juego completo, el F5 seguía -0.19 bajo. Multiplica ambas λ de F5 (no toca su ML) |
+| `ML_CAL_A` / `ML_CAL_B` | 0.10 / 0.70 | Capa Platt del moneyline: `p_cal = sigmoid(A + B·logit(p))`. B<1 encoge la sobreconfianza. Se ajusta con `calibrar.py` |
 | `PESO_OFENSIVA_RECIENTE` | 0.45 | Mezcla reciencia/temporada de la ofensiva |
 | `SHRINK_IP` | 60 | IP de regresión del FIP hacia la liga |
 | `FIP_REEMPLAZO` | 4.80 | Abridor sin stats de temporada |
@@ -119,6 +122,26 @@ Primera corrida de `validar.py` sobre 552 juegos:
 
 **Moraleja:** ningún parámetro se mueve por intuición. Se corre `validar.py`
 (workflow "Validar calibracion"), se lee el sesgo, y se ajusta.
+
+Segunda corrida sobre **653 juegos** (acumulados a sep-2026):
+
+- **El moneyline seguía en volado** (Brier 0.2509): no es sesgo de centro sino
+  **sobreconfianza** — el modelo abre demasiado el abanico de probabilidades. El
+  intercepto solo (recentrar) no ayudaba; encoger la confianza sí. Se añadió una
+  **capa de calibración Platt** (`calibrar_ml`, `ML_CAL_A/B`) ajustada por
+  validación cruzada de 5 pliegues con `calibrar.py`. Baja el Brier fuera de
+  muestra a ~0.2494 y recentra el promedio de local en el 53.9% real. El CSV
+  guarda la prob **cruda** para poder re-ajustar sobre todo el histórico.
+- **Totales otra vez bajos** (-0.19 juego completo, -0.30 F5): `AJUSTE_BASE`
+  0.94 → 0.961 y se añadió `AJUSTE_F5` = 1.04 para el residual de F5.
+- El único mercado que **le gana al volado** es el total del juego (Brier 0.246).
+  El ML/RL rondan la moneda; F5 y NRFI son marginales. La página etiqueta cada
+  mercado con su confianza real para no sobre-apostar el ML.
+
+**Herramienta nueva:** `calibrar.py` ajusta la capa del ML (CV de 5 pliegues,
+barrido de pendiente) y sugiere el `AJUSTE_BASE` de totales. Corre en el workflow
+"Validar calibracion" junto a `validar.py`. Solo recomienda calibrar si mejora
+fuera de muestra: si no, deja identidad (A=0, B=1). **No se calibra "a ojo".**
 
 ### ¿Lanzar en casa es habilidad del pitcher?
 
