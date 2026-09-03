@@ -224,6 +224,9 @@ def _reporte_totales(nombre, pred, real, base_actual):
     print(f"  Media esperada {mp:.2f}  vs  real {mr:.2f}   bias {bias:+.3f}")
     print(f"  Nivel * {factor:.4f} centra el sesgo.  "
           f"AJUSTE_BASE {base_actual:.3f} -> {base_actual * factor:.3f}")
+    print("  OJO: valido solo si estas predicciones se generaron con el AJUSTE_BASE")
+    print("  actual. Si acabas de cambiarlo, el historico viejo aun trae el nivel")
+    print("  anterior y esta sugerencia lo re-aplica: espera a regenerar y re-mide.")
 
 
 def main(desde=None):
