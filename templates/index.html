@@ -496,7 +496,7 @@ function pintarTablero(data) {
           <td>${j.mercado}${j.linea !== '' ? ' ' + j.linea : ''} ${trustBadge(mercadoTipo(j.mercado))}</td>
           <td class="pick">${j.pick}</td>
           <td class="odds">${j.momio > 0 ? '+' : ''}${j.momio}</td>
-          <td>${pct(j.p_modelo)}</td>
+          <td title="Probabilidad condicionada a no hacer push">${pct(j.p_modelo_condicional ?? j.p_modelo)}${j.p_push ? `<small> · push ${pct(j.p_push)}</small>` : ''}</td>
           <td class="edge">+${pct(j.ev)}</td>
           <td class="odds">${j.libro}</td></tr>`).join('')}</tbody>
       </table>
@@ -615,7 +615,7 @@ function cardJuego(g) {
               <td class="lbl">${j.mercado}${j.linea !== '' ? ' ' + j.linea : ''}</td>
               <td style="text-align:left;font-weight:700">${j.pick}</td>
               <td class="odds">${j.momio > 0 ? '+' : ''}${j.momio}</td>
-              <td>${pct(j.p_modelo)}</td><td>${pct(j.p_mercado)}</td>
+              <td title="Probabilidad condicionada a no hacer push">${pct(j.p_modelo_condicional ?? j.p_modelo)}${j.p_push ? `<small> · push ${pct(j.p_push)}</small>` : ''}</td><td>${pct(j.p_mercado)}</td>
               <td style="color:var(--ev);font-weight:700">+${pct(j.ev)}</td>
               <td class="odds">${j.libro}</td>
             </tr>`).join('')}

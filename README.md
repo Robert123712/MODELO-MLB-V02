@@ -1,5 +1,8 @@
 # Simulador Monte Carlo de MLB
 
+**Auditoria 2026-09-08:** [hallazgos, correcciones y plan de integracion con Edgebook](audit/REVISION-2026-09-08.md). La validacion anterior mezclaba pasado/futuro; los resultados legacy son exploratorios. No hay ventaja de mercado demostrada.
+
+
 Modelo predictivo de resultados de béisbol (MLB) construido en Python. Estima probabilidades de moneyline, run line y totales mediante simulación Monte Carlo, calibrada con estadísticas reales de la temporada.
 
 ## Qué hace

@@ -12,7 +12,7 @@ import numpy as np
 import math
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import valor  # modulo #2
 
@@ -23,11 +23,12 @@ except Exception:
     pass
 
 # ---------------- CONSTANTES ----------------
+MODEL_VERSION = "3.1-audit-20260908"
 LIGA_FIP = 4.15
 # Ventaja de local REPARTIDA: la casa anota x HFA y la visita anota / HFA.
 # Antes solo inflaba la ofensiva local y el modelo daba 51.9% de victoria local
 # cuando la realidad de 552 juegos validados fue 54.5% (la liga historica anda
-# en ~54%). Repartirla dobla el efecto sobre el ML sin mover el total del juego,
+# en ~54%). Repartirla mueve el ML y tambien puede cambiar ligeramente el total,
 # que ya estaba bien calibrado (bias -0.08). Calibrado a p_casa ~54%.
 HFA = 1.045
 N_SIMS = 50_000
@@ -42,10 +43,10 @@ DISPERSION_K = 4.0   # dispersion de la binomial negativa. Mas bajo = mas varian
 DISPERSION_K_F5 = 2.4  # F5: menos entradas -> mas varianza relativa -> k mas bajo
 AJUSTE_BASE = 0.961  # calibra el nivel global de carreras. Subido de 0.94 tras
                      # medir sesgo -0.19 en 653 juegos (media 8.64 esp vs 8.83 real).
-                     # Solo mueve el NIVEL de totales; el moneyline se cancela.
+                     # Mueve el nivel de carreras y puede afectar el ML simulado.
 AJUSTE_F5 = 1.04     # nivel EXTRA para F5: tras centrar el juego completo, el F5
                      # seguia -0.19 bajo (media 4.60 esp vs 4.90 real). Multiplica
-                     # ambas lambdas de F5 por igual: mueve el total F5, no su ML.
+                     # ambas lambdas de F5 por igual: puede afectar total y ML F5.
 
 # --- CAPA DE CALIBRACION DEL MONEYLINE ---
 # La probabilidad CRUDA de la simulacion (P(gana casa)) sale mal calibrada:
@@ -109,7 +110,7 @@ _rng_local = threading.local()
 def _rng():
     gen = getattr(_rng_local, "gen", None)
     if gen is None:
-        seed = None if SEMILLA is None else SEMILLA + threading.get_ident()
+        seed = SEMILLA
         gen = np.random.default_rng(seed)
         _rng_local.gen = gen
     return gen
@@ -867,7 +868,7 @@ def predecir_hits(avg_season, pitcher_baa, split_team, park_factor, avg_7d=None,
     avg_split = max(0.100, min(avg_split, 0.400))
     # Pitcher: su BAA o liga
     baa = pitcher_baa if pitcher_baa is not None else LIGA_AVG
-    factor_pitcher = LIGA_AVG / baa if baa > 0.050 else 1.0
+    factor_pitcher = baa / LIGA_AVG if baa > 0.050 else 1.0
     factor_pitcher = max(0.70, min(factor_pitcher, 1.30))
     # Blend: season split + reciente + pitcher + park + liga
     pesos = [0.35, 0.20, 0.20, 0.15, 0.10]
@@ -1237,6 +1238,13 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
     marcadores, F5, NRFI) y banderas de calidad de datos. None si el juego
     no trae abridores anunciados.
     """
+    # Semilla estable por partido: independiente del orden y del hilo de ejecucion.
+    if SEMILLA is not None:
+        import hashlib
+        clave = f"{SEMILLA}:{hoy}:{juego.get('game_id')}:{juego['away_name']}:{juego['home_name']}"
+        seed = int.from_bytes(hashlib.sha256(clave.encode()).digest()[:8], "big")
+        _rng_local.gen = np.random.default_rng(seed)
+    generado_en = datetime.now(timezone.utc).isoformat()
     visita, casa = juego["away_name"], juego["home_name"]
     nombre_v, nombre_c = juego.get("away_probable_pitcher"), juego.get("home_probable_pitcher")
     if not nombre_v or not nombre_c:
@@ -1313,6 +1321,8 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
         "mano_v": mano_v, "mano_c": mano_c,
         "bp_v": bp_v, "bp_c": bp_c,
         "fatiga_v": fat_v, "fatiga_c": fat_c,
+        "game_id": juego.get("game_id"), "game_datetime": juego.get("game_datetime"),
+        "generado_en": generado_en, "model_version": MODEL_VERSION,
         "rg_v": rg_v, "rg_c": rg_c, "split_v": split_v, "split_c": split_c,
         "park": park, "clima": clima, "def_v": def_v, "def_c": def_c,
         "lineup_v": lu_v, "lineup_c": lu_c, "hay_lineup": hay_lineup,
@@ -1442,11 +1452,13 @@ def correr(fecha=None):
             f"{r['lam_v']:.2f}", f"{r['lam_c']:.2f}", f"{r['total_esp']:.2f}",
             # p_casa CRUDA en el CSV (no la calibrada): asi el historico mantiene
             # la misma semantica y calibrar.py puede re-ajustar sobre todo el.
-            f"{r['p_casa_cruda']:.3f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
+            f"{r['p_casa_cruda']:.6f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
             f"{f5['total_esp']:.2f}", f"{f5['p_casa']:.3f}", f"{f5['p_empate']:.3f}",
             f"{f5['p_visita']:.3f}", f"{overs_f5[4.5]:.3f}",
             f"{f5['rl_casa']:.3f}", f"{f5['rl_visita']:.3f}",
             f"{nrfi['nrfi']:.3f}",
+            str(j["game_id"]), r["generado_en"], str(j.get("game_datetime", "")),
+            MODEL_VERSION, f"{r['p_casa']:.6f}",
         ]))
 
     if totales_slate:
@@ -1458,35 +1470,30 @@ def correr(fecha=None):
 
     archivo = "predicciones.csv"
     CABECERA = ("fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,"
-                "total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5,p_nrfi\n")
-    nuevo = not os.path.exists(archivo)
-    existentes = set()
-    if not nuevo:
-        with open(archivo, encoding="utf-8") as f:
-            lineas = f.readlines()
-        # Al agregar columnas nuevas hay que reescribir la cabecera, si no el
-        # historico viejo y el nuevo quedan desalineados y validar.py lee mal.
-        if lineas and lineas[0] != CABECERA:
-            lineas[0] = CABECERA
-            with open(archivo, "w", encoding="utf-8") as f:
-                f.writelines(lineas)
-        for linea in lineas[1:]:
-            partes = linea.split(",")
-            if len(partes) >= 3:
-                existentes.add((partes[0], partes[1], partes[2]))
-
+                "total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5,p_nrfi,game_id,generado_en,game_datetime,model_version,p_casa_calibrada\n")
+    import csv
+    import io
+    columnas = CABECERA.strip().split(",")
+    anteriores = []
+    if os.path.exists(archivo):
+        with open(archivo, encoding="utf-8", newline="") as f:
+            anteriores = list(csv.DictReader(f))
+    # Legacy sin ID permanece intacto; los nuevos se deduplican por gamePk.
+    existentes = {p.get("game_id") for p in anteriores if p.get("game_id")}
     guardadas = 0
-    with open(archivo, "a", encoding="utf-8") as f:
-        if nuevo:
-            f.write(CABECERA)
-        for fila in filas_csv:
-            partes = fila.split(",")
-            clave = (partes[0], partes[1], partes[2])
-            if clave in existentes:
-                continue
-            f.write(fila + "\n")
-            existentes.add(clave)
-            guardadas += 1
+    for fila in filas_csv:
+        p = dict(zip(columnas, next(csv.reader(io.StringIO(fila)))))
+        if p["game_id"] in existentes:
+            continue
+        anteriores.append(p)
+        existentes.add(p["game_id"])
+        guardadas += 1
+    temporal = archivo + ".tmp"
+    with open(temporal, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columnas)
+        writer.writeheader()
+        writer.writerows(anteriores)
+    os.replace(temporal, archivo)
 
     omitidas = len(filas_csv) - guardadas
     print(f"✅ {guardadas} predicciones guardadas en {archivo}" +

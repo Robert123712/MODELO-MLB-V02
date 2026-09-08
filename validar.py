@@ -62,42 +62,92 @@ def _guardar_cache(cache):
 
 
 def resultados_de_fecha(fecha, cache):
-    """{(visita, casa): {...}} de los juegos FINALES de esa fecha.
-    Incluye el marcador por entrada para poder calificar F5 y NRFI."""
-    if fecha in cache:
-        return {tuple(k.split("|")): v for k, v in cache[fecha].items()}
-
+    """Resultados por gamePk y por nombres SOLO cuando el cruce es unico.
+    Cachea exclusivamente jornadas completas; un vacio no congela pendientes.
+    """
+    from collections import Counter
+    entrada = cache.get(fecha, {})
+    if entrada.get("schema_version") == 2 and entrada.get("completa"):
+        return {tuple(k.split("|")): v for k, v in entrada["juegos"].items()}
     try:
-        sch = statsapi.schedule(date=fecha)
+        data = statsapi.get("schedule", {"sportId": 1, "date": fecha, "hydrate": "linescore"}, request_kwargs={"timeout": 20})
     except Exception as e:
-        print(f"⚠ Sin conexion para {fecha}: {e}")
+        print(f"Sin conexion para {fecha}: {e}")
         return {}
-
+    juegos = [g for d in data.get("dates", []) for g in d.get("games", [])]
+    def clave(g):
+        return tuple(g["teams"][lado]["team"]["name"] for lado in ("away", "home"))
+    cuentas = Counter(clave(g) for g in juegos)
     out = {}
-    for g in sch:
-        if g["status"] != "Final":
+    completa = bool(juegos)
+    for g in juegos:
+        if g["status"].get("detailedState") != "Final":
+            completa = False
             continue
-        dato = {
-            "rv": g.get("away_score") or 0,
-            "rc": g.get("home_score") or 0,
-            "f5v": None, "f5c": None, "inn1": None,
-        }
-        try:
-            ls = statsapi.get("game_linescore", {"gamePk": g["game_id"]})
-            innings = ls.get("innings", [])
-            if len(innings) >= 5:
-                dato["f5v"] = sum((i.get("away", {}).get("runs", 0) or 0) for i in innings[:5])
-                dato["f5c"] = sum((i.get("home", {}).get("runs", 0) or 0) for i in innings[:5])
-            if innings:
-                primera = innings[0]
-                dato["inn1"] = ((primera.get("away", {}).get("runs", 0) or 0)
-                                + (primera.get("home", {}).get("runs", 0) or 0))
-        except Exception:
-            pass
-        out[(g["away_name"], g["home_name"])] = dato
-
-    cache[fecha] = {"|".join(k): v for k, v in out.items()}
+        t = g["teams"]
+        if any(t[lado].get("score") is None for lado in ("away", "home")):
+            completa = False
+            continue
+        dato = {"rv": t["away"]["score"], "rc": t["home"]["score"],
+                "f5v": None, "f5c": None, "inn1": None, "game_id": str(g["gamePk"])}
+        innings = g.get("linescore", {}).get("innings", [])
+        def completas(n):
+            return len(innings) >= n and all(
+                i.get(lado, {}).get("runs") is not None
+                for i in innings[:n] for lado in ("away", "home"))
+        if completas(5):
+            dato["f5v"] = sum(i["away"]["runs"] for i in innings[:5])
+            dato["f5c"] = sum(i["home"]["runs"] for i in innings[:5])
+        else:
+            completa = False
+        if completas(1):
+            dato["inn1"] = innings[0]["away"]["runs"] + innings[0]["home"]["runs"]
+        out[(str(g["gamePk"]),)] = dato
+        if cuentas[clave(g)] == 1:
+            out[clave(g)] = dato
+    cache[fecha] = {"schema_version": 2, "completa": completa,
+                    "juegos": {"|".join(k): v for k, v in out.items()}}
     return out
+
+
+def preparar_resultados(fechas, cache):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    resultado = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pendientes = {pool.submit(resultados_de_fecha, fecha, cache): fecha for fecha in fechas}
+        for future in as_completed(pendientes):
+            fecha = pendientes[future]
+            resultado[fecha] = future.result()
+            print(f"Resultados {len(resultado)}/{len(fechas)}: {fecha}", flush=True)
+    _guardar_cache(cache)
+    return resultado
+
+
+def resultado_prediccion(p, reales):
+    key = (p["game_id"],) if p.get("game_id") else (p["visita"], p["casa"])
+    return reales.get(key)
+
+
+def cargar_predicciones():
+    """Conserva la primera prediccion por ID (legacy: fecha/equipos)."""
+    with open(ARCHIVO_PRED, encoding="utf-8") as f:
+        filas = list(csv.DictReader(f))
+    vistos, salida = set(), []
+    for p in filas:
+        if p.get("generado_en") or p.get("game_datetime"):
+            from datetime import datetime
+            try:
+                emitido = datetime.fromisoformat(p["generado_en"].replace("Z", "+00:00"))
+                inicio = datetime.fromisoformat(p["game_datetime"].replace("Z", "+00:00"))
+                if emitido.tzinfo is None or inicio.tzinfo is None or emitido >= inicio:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+        key = (p["fecha"], p.get("game_id") or (p["visita"], p["casa"]))
+        if key not in vistos:
+            vistos.add(key)
+            salida.append(p)
+    return salida
 
 
 # ---------------- METRICAS ----------------
@@ -162,7 +212,8 @@ def _reporte_mercado(nombre, pares, referencia=None):
 
 def _f(fila, campo):
     try:
-        return float(fila[campo])
+        valor = float(fila[campo])
+        return valor if math.isfinite(valor) else None
     except (TypeError, ValueError, KeyError):
         return None
 
@@ -172,8 +223,7 @@ def validar(desde=None):
         print(f"No existe {ARCHIVO_PRED}. Corre el modelo primero.")
         return 1
 
-    with open(ARCHIVO_PRED, encoding="utf-8") as f:
-        predicciones = list(csv.DictReader(f))
+    predicciones = cargar_predicciones()
     if desde:
         predicciones = [p for p in predicciones if _clave_fecha(p["fecha"]) >= _clave_fecha(desde)]
     if not predicciones:
@@ -189,10 +239,11 @@ def validar(desde=None):
     print(f"Validando {len(predicciones)} predicciones en {len(fechas)} fechas "
           f"({fechas[0]} → {fechas[-1]})...")
 
+    resultados = preparar_resultados(fechas, cache)
     for fecha in fechas:
-        reales = resultados_de_fecha(fecha, cache)
+        reales = resultados[fecha]
         for p in (x for x in predicciones if x["fecha"] == fecha):
-            real = reales.get((p["visita"], p["casa"]))
+            real = resultado_prediccion(p, reales)
             if not real:
                 sin_resultado += 1
                 continue
@@ -203,7 +254,7 @@ def validar(desde=None):
             p_casa = _f(p, "p_casa")   # el CSV guarda la prob CRUDA del ML
             if p_casa is not None:
                 ml_crudo.append((p_casa, gano_casa))
-                ml.append((calibrar_ml(p_casa), gano_casa))   # como sale ya calibrado
+                ml.append((_f(p, "p_casa_calibrada") if _f(p, "p_casa_calibrada") is not None else calibrar_ml(p_casa), gano_casa))   # como sale ya calibrado
             p_o85 = _f(p, "p_over85")
             if p_o85 is not None and total_real != 8.5:
                 over85.append((p_o85, 1 if total_real > 8.5 else 0))
@@ -231,7 +282,7 @@ def validar(desde=None):
     print("=" * 64)
     print(f"Predicciones con resultado: {len(ml)} | sin resultado aun: {sin_resultado}")
 
-    _reporte_mercado("MONEYLINE (gana la casa, CALIBRADO)", ml, referencia="0.23")
+    _reporte_mercado("MONEYLINE (emitido si existe; legacy recalibrado retrospectivo)", ml, referencia="0.23")
     if ml_crudo:
         print(f"  (Brier CRUDO sin calibrar: {brier(ml_crudo):.4f} -> calibrado {brier(ml):.4f})")
     _reporte_mercado("TOTAL Over 8.5", over85)
@@ -245,7 +296,8 @@ def validar(desde=None):
 
     print("\n" + "=" * 64)
     print("COMO LEERLO")
-    print("  Brier < 0.25 y log-loss < 0.693: el modelo aporta sobre el volado.")
+    print("  El legacy recalibrado NO es prueba fuera de muestra. Usa calibrar.py.")
+    print("  Ganar al volado no demuestra superar al mercado ni rentabilidad.")
     print("  En la curva, 'sesgo' positivo = el modelo dice mas de lo que pasa")
     print("  (sobreconfiado). Un tramo descalibrado con n grande es accionable:")
     print("  ahi el modelo se equivoca de forma sistematica, no por azar.")
@@ -270,7 +322,7 @@ def _reporte_error(nombre, errores):
 def _clave_fecha(f):
     """mm/dd/YYYY -> ordenable."""
     mm, dd, yyyy = f.split("/")
-    return (yyyy, mm, dd)
+    return (int(yyyy), int(mm), int(dd))
 
 
 if __name__ == "__main__":

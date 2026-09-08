@@ -1,0 +1,117 @@
+Resultados 1/64: 07/08/2026
+Resultados 2/64: 07/02/2026
+Resultados 3/64: 07/07/2026
+Resultados 4/64: 06/10/2026
+Resultados 5/64: 07/09/2026
+Resultados 6/64: 07/11/2026
+Resultados 7/64: 07/12/2026
+Resultados 8/64: 07/14/2026
+Resultados 9/64: 07/16/2026
+Resultados 10/64: 06/14/2026
+Resultados 11/64: 06/18/2026
+Resultados 12/64: 07/19/2026
+Resultados 13/64: 07/20/2026
+Resultados 14/64: 07/10/2026
+Resultados 15/64: 07/22/2026
+Resultados 16/64: 07/23/2026
+Resultados 17/64: 07/24/2026
+Resultados 18/64: 07/25/2026
+Resultados 19/64: 07/26/2026
+Resultados 20/64: 07/17/2026
+Resultados 21/64: 07/18/2026
+Resultados 22/64: 07/29/2026
+Resultados 23/64: 07/30/2026
+Resultados 24/64: 07/31/2026
+Resultados 25/64: 08/01/2026
+Resultados 26/64: 07/27/2026
+Resultados 27/64: 08/03/2026
+Resultados 28/64: 08/04/2026
+Resultados 29/64: 08/05/2026
+Resultados 30/64: 08/07/2026
+Resultados 31/64: 08/08/2026
+Resultados 32/64: 08/09/2026
+Resultados 33/64: 08/10/2026
+Resultados 34/64: 08/11/2026
+Resultados 35/64: 08/12/2026
+Resultados 36/64: 08/13/2026
+Resultados 37/64: 08/14/2026
+Resultados 38/64: 08/15/2026
+Resultados 39/64: 08/16/2026
+Resultados 40/64: 08/17/2026
+Resultados 41/64: 08/18/2026
+Resultados 42/64: 08/19/2026
+Resultados 43/64: 08/20/2026
+Resultados 44/64: 08/21/2026
+Resultados 45/64: 08/22/2026
+Resultados 46/64: 08/23/2026
+Resultados 47/64: 08/24/2026
+Resultados 48/64: 08/25/2026
+Resultados 49/64: 08/26/2026
+Resultados 50/64: 08/28/2026
+Resultados 51/64: 08/29/2026
+Resultados 52/64: 08/30/2026
+Resultados 53/64: 08/31/2026
+Resultados 54/64: 09/01/2026
+Resultados 55/64: 09/02/2026
+Resultados 56/64: 09/03/2026
+Resultados 57/64: 09/04/2026
+Resultados 58/64: 09/05/2026
+Resultados 59/64: 09/06/2026
+Resultados 60/64: 09/07/2026
+Resultados 61/64: 07/21/2026
+Resultados 62/64: 07/28/2026
+Resultados 63/64: 08/02/2026
+Resultados 64/64: 09/08/2026
+================================================================
+           CALIBRACION DE PROBABILIDADES
+================================================================
+Juegos con resultado: ML=692  F5=668
+
+MONEYLINE (gana la casa): desarrollo=555, holdout=137 desde (2026, 8, 25)
+  Desarrollo temporal Identidad: Brier=0.251123
+  Desarrollo temporal Intercepto + B=1.0: Brier=0.250990
+  Desarrollo temporal Intercepto + B=0.85: Brier=0.250125
+  Desarrollo temporal Intercepto + B=0.7: Brier=0.249434
+  Desarrollo temporal Platt: Brier=0.248818
+  Candidato seleccionado ANTES del holdout: Platt, A=0.144591, B=0.136366
+  Holdout Crudo: Brier=0.244544, logloss=0.682094
+  Holdout Candidato: Brier=0.249043, logloss=0.691224
+  Holdout Frecuencia local previa: Brier=0.250087, logloss=0.693324
+  Diagnostico exploratorio: versiones mezcladas y legacy sin timestamp.
+  No promueve parametros automaticamente. Requiere validacion prospectiva y mercado.
+
+F5 — gana la casa: desarrollo=543, holdout=125 desde (2026, 8, 26)
+  Desarrollo temporal Identidad: Brier=0.249993
+  Desarrollo temporal Intercepto + B=1.0: Brier=0.249693
+  Desarrollo temporal Intercepto + B=0.85: Brier=0.249417
+  Desarrollo temporal Intercepto + B=0.7: Brier=0.249256
+  Desarrollo temporal Platt: Brier=0.249720
+  Candidato seleccionado ANTES del holdout: Intercepto + B=0.7, A=0.065635, B=0.700000
+  Holdout Crudo: Brier=0.242814, logloss=0.678459
+  Holdout Candidato: Brier=0.243364, logloss=0.679775
+  Holdout Frecuencia local previa: Brier=0.250343, logloss=0.693836
+  Diagnostico exploratorio: versiones mezcladas y legacy sin timestamp.
+  No promueve parametros automaticamente. Requiere validacion prospectiva y mercado.
+
+----------------------------------------------------------------
+NIVEL DE TOTALES (diagnostico; tambien puede afectar ML)
+
+TOTALES juego completo  (n=692)
+  Media esperada 8.65  vs  real 8.85   bias -0.198
+  Razon observado/esperado = 1.0228; descriptiva, no parametro recomendado.
+  OJO: valido solo si estas predicciones se generaron con el AJUSTE_BASE
+  actual. Si acabas de cambiarlo, el historico viejo aun trae el nivel
+  anterior. No re-simules el pasado con datos actuales: recoge nuevas predicciones.
+
+TOTALES F5  (n=668)
+  Media esperada 4.65  vs  real 4.94   bias -0.289
+  Razon observado/esperado = 1.0622; descriptiva, no parametro recomendado.
+  OJO: valido solo si estas predicciones se generaron con el AJUSTE_BASE
+  actual. Si acabas de cambiarlo, el historico viejo aun trae el nivel
+  anterior. No re-simules el pasado con datos actuales: recoge nuevas predicciones.
+
+================================================================
+COMO LEERLO
+  La capa sirve si baja el Brier/log-loss de TEST (fuera de muestra).
+  No copies parametros sin confirmar mejora prospectiva contra baseline y mercado.
+  No ajustes el nivel con un historico de versiones mezcladas.

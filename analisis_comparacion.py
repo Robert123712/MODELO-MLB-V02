@@ -21,6 +21,8 @@ FECHA = sys.argv[1] if len(sys.argv) > 1 else "06/18/2026"
 
 
 def main():
+    print("ADVERTENCIA: diagnostico retrospectivo con stats actuales; NO es un backtest pregame.")
+    print("Para evaluar predicciones emitidas usa validar.py / calibrar.py.")
     juegos = statsapi.schedule(date=FECHA)
     print(f"\n=== ANALISIS POST-PARTIDO: {FECHA} ===\n")
 

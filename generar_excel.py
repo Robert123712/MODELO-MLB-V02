@@ -294,7 +294,7 @@ def generar(fecha=None):
     ws3.merge_cells("A2:E2")
     ws3.cell(row=2, column=1, value="(Requiere ODDS_API_KEY activada en variable de entorno)").font = Font(name="Calibri", italic=True, color="999999", size=9)
 
-    headers3 = ["Juego", "Mercado", "Pick", "Prob Modelo", "Momio", "EV", "Casa"]
+    headers3 = ["Juego", "Mercado", "Pick", "Prob Modelo (sin push)", "Momio", "EV", "Casa"]
     escribir_encabezados(ws3, 4, headers3)
 
     f3 = 5
@@ -306,7 +306,7 @@ def generar(fecha=None):
             estilo_celda(ws3, f3, 1, f"{r['visita']} @ {r['casa']}", font=data_font)
             estilo_celda(ws3, f3, 2, jg["mercado"], font=data_font)
             estilo_celda(ws3, f3, 3, jg["pick"], font=bold_font)
-            estilo_celda(ws3, f3, 4, round(jg["p_modelo"], 4), fmt=pct_fmt, font=data_font)
+            estilo_celda(ws3, f3, 4, round(jg.get("p_modelo_condicional", jg["p_modelo"]), 4), fmt=pct_fmt, font=data_font)
             mom = jg["momio"]
             estilo_celda(ws3, f3, 5, f"{mom:+d}" if mom > 0 else str(mom), font=data_font)
             estilo_celda(ws3, f3, 6, round(jg["ev"], 4), fmt=pct_fmt,

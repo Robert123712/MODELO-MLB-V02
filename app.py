@@ -63,6 +63,9 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
         return round(x, n) if x is not None else None
 
     juego_dict = {
+        "game_id": r["game_id"], "game_datetime": r["game_datetime"],
+        "generado_en": r["generado_en"], "model_version": r["model_version"],
+        "p_casa_cruda": r["p_casa_cruda"],
         "visita": r["visita"], "casa": r["casa"],
         "abridor_v": r["abridor_v"], "abridor_c": r["abridor_c"],
         "fip_v": _r(r["fip_v"]), "fip_c": _r(r["fip_c"]),
@@ -103,6 +106,8 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
         "jugadas_valor": [
             {"mercado": jg["mercado"], "pick": jg["pick"], "linea": jg.get("linea", ""),
              "p_modelo": round(jg["p_modelo"], 4), "p_mercado": round(jg["p_mercado"], 4),
+             "p_push": round(jg.get("p_push", 0.0), 4),
+             "p_modelo_condicional": jg.get("p_modelo_condicional", jg["p_modelo"]),
              "momio": jg["momio"], "ev": round(jg["ev"], 4), "libro": jg.get("libro", "")}
             for jg in jugadas
         ],

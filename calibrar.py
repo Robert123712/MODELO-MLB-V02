@@ -57,6 +57,8 @@ def _sigmoid(z):
 def ajustar_platt(pares, iteraciones=50):
     """Regresion logistica de 1 variable: y ~ sigmoid(A + B*logit(p)).
     Devuelve (A, B). Newton-Raphson con Hessiano 2x2 invertido a mano."""
+    if not pares or len({y for _, y in pares}) < 2:
+        return 0.0, 1.0
     zs = [_logit(p) for p, _ in pares]
     ys = [y for _, y in pares]
     a, b = 0.0, 1.0
@@ -77,9 +79,18 @@ def ajustar_platt(pares, iteraciones=50):
         # theta -= H^-1 g
         da = (h11 * g0 - h01 * g1) / det
         db = (-h01 * g0 + h00 * g1) / det
-        a -= da
-        b -= db
-        if abs(da) < 1e-9 and abs(db) < 1e-9:
+        # Backtracking evita saltos de Newton que saturan o invierten el modelo.
+        actual = _logloss(_aplicar(pares, a, b))
+        paso = 1.0
+        while paso > 1e-8:
+            na, nb = a - paso * da, b - paso * db
+            if abs(na) <= 10 and 0 <= nb <= 10 and _logloss(_aplicar(pares, na, nb)) <= actual:
+                break
+            paso *= .5
+        if paso <= 1e-8:
+            break
+        a, b = na, nb
+        if abs(paso * da) < 1e-9 and abs(paso * db) < 1e-9:
             break
     return a, b
 
@@ -90,6 +101,8 @@ def ajustar_intercepto(pares, b_fijo, iteraciones=50):
     confianza. Es el ajuste de 1 parametro, mucho menos propenso a sobreajuste."""
     zs = [_logit(p) for p, _ in pares]
     ys = [y for _, y in pares]
+    if not pares or len(set(ys)) < 2:
+        return 0.0
     a = 0.0
     for _ in range(iteraciones):
         g = h = 0.0
@@ -100,8 +113,17 @@ def ajustar_intercepto(pares, b_fijo, iteraciones=50):
         if h < 1e-12:
             break
         da = g / h
-        a -= da
-        if abs(da) < 1e-9:
+        actual = _logloss(_aplicar(pares, a, b_fijo))
+        paso = 1.0
+        while paso > 1e-8:
+            nuevo = a - paso * da
+            if abs(nuevo) <= 10 and _logloss(_aplicar(pares, nuevo, b_fijo)) <= actual:
+                break
+            paso *= .5
+        if paso <= 1e-8:
+            break
+        a = nuevo
+        if abs(paso * da) < 1e-9:
             break
     return a
 
@@ -124,26 +146,28 @@ def _aplicar(pares, a, b):
 def _cargar_pares(desde=None):
     """Devuelve pares ML y F5 (prob_cruda, gano) en orden cronologico, mas los
     errores de total (esperado - real) para juego completo y F5."""
-    with open(validar.ARCHIVO_PRED, encoding="utf-8") as f:
-        preds = list(csv.DictReader(f))
+    preds = validar.cargar_predicciones()
     if desde:
         preds = [p for p in preds if validar._clave_fecha(p["fecha"]) >= validar._clave_fecha(desde)]
     fechas = sorted({p["fecha"] for p in preds}, key=validar._clave_fecha)
     cache = validar._cargar_cache()
 
     ml, f5 = [], []
+    fechas_ml, fechas_f5 = [], []
     tot_pred, tot_real = [], []
     f5_pred, f5_real = [], []
+    resultados = validar.preparar_resultados(fechas, cache)
     for fecha in fechas:
-        reales = validar.resultados_de_fecha(fecha, cache)
+        reales = resultados[fecha]
         for p in (x for x in preds if x["fecha"] == fecha):
-            real = reales.get((p["visita"], p["casa"]))
+            real = validar.resultado_prediccion(p, reales)
             if not real:
                 continue
             gano_casa = 1 if real["rc"] > real["rv"] else 0
             pc = validar._f(p, "p_casa")
             if pc is not None:
                 ml.append((pc, gano_casa))
+                fechas_ml.append(validar._clave_fecha(fecha))
             te = validar._f(p, "total_esp")
             if te is not None:
                 tot_pred.append(te)
@@ -152,64 +176,67 @@ def _cargar_pares(desde=None):
                 pc5 = validar._f(p, "p_casa_f5")
                 if pc5 is not None:
                     f5.append((pc5, 1 if real["f5c"] > real["f5v"] else 0))
+                    fechas_f5.append(validar._clave_fecha(fecha))
                 tf5 = validar._f(p, "total_f5")
                 if tf5 is not None:
                     f5_pred.append(tf5)
                     f5_real.append(real["f5v"] + real["f5c"])
     validar._guardar_cache(cache)
-    return ml, f5, (tot_pred, tot_real), (f5_pred, f5_real)
+    return ml, f5, (tot_pred, tot_real), (f5_pred, f5_real), fechas_ml, fechas_f5
 
 
-def _cv_brier(pares, ajustador, k=5):
-    """Brier PROMEDIO fuera de muestra por validacion cruzada de k pliegues.
-    'ajustador' recibe el train de cada pliegue y devuelve (A, B); se evalua en
-    el pliegue retenido. Baraja de forma determinista para no depender del orden."""
-    idx = list(range(len(pares)))
-    # barajado determinista (sin semilla externa): intercala por resto
-    idx.sort(key=lambda i: (i * 2654435761) % len(pares))
-    folds = [idx[j::k] for j in range(k)]
-    err = 0.0
-    for j in range(k):
-        test_i = set(folds[j])
-        train = [pares[i] for i in idx if i not in test_i]
-        test = [pares[i] for i in folds[j]]
-        a, b = ajustador(train)
-        err += sum((_sigmoid(a + b * _logit(p)) - y) ** 2 for p, y in test)
-    return err / len(pares)
+def pliegues_temporales(fechas, k=5):
+    """Ventana creciente por FECHA: ningun juego del mismo dia cruza el corte."""
+    dias = sorted(set(fechas))
+    if dias != list(dict.fromkeys(fechas)):
+        raise ValueError("Fechas fuera de orden")
+    if len(dias) < k + 1:
+        raise ValueError("Fechas insuficientes para validacion temporal")
+    bloques = [dias[len(dias)*j//(k+1):len(dias)*(j+1)//(k+1)] for j in range(k+1)]
+    for bloque in bloques[1:]:
+        train = [i for i, f in enumerate(fechas) if f < bloque[0]]
+        test = [i for i, f in enumerate(fechas) if bloque[0] <= f <= bloque[-1]]
+        yield train, test
 
 
-def _reporte_calibracion(nombre, pares):
-    if len(pares) < 60:
-        print(f"\n{nombre}: muestra chica ({len(pares)}), no se ajusta.")
+def _cv_brier(pares, ajustador, k=5, fechas=None):
+    fechas = fechas if fechas is not None else list(range(len(pares)))
+    errores = []
+    for train_i, test_i in pliegues_temporales(fechas, k):
+        a, b = ajustador([pares[i] for i in train_i])
+        errores.extend((_sigmoid(a + b * _logit(pares[i][0])) - pares[i][1])**2 for i in test_i)
+    return sum(errores) / len(errores)
+
+
+def _reporte_calibracion(nombre, pares, fechas):
+    if len(pares) < 120 or len(set(fechas)) < 12:
+        print(f"\n{nombre}: muestra insuficiente ({len(pares)}), no se ajusta.")
         return None
-
-    base = _brier(pares)
-    print(f"\n{nombre}  (n={len(pares)})   Brier crudo = {base:.4f}")
-    print("  Validacion cruzada de 5 pliegues (Brier fuera de muestra):")
-
-    opciones = []   # (etiqueta, ajustador_full, cv)
-    # 1) intercepto solo (B fijo): corrige el CENTRO, 1 parametro
-    for b in (1.0, 0.85, 0.70):
-        aj = (lambda bb: (lambda tr: (ajustar_intercepto(tr, bb), bb)))(b)
-        cv = _cv_brier(pares, aj)
-        a_full = ajustar_intercepto(pares, b)
-        opciones.append((f"A libre, B={b:.2f}", a_full, b, cv))
-    # 2) ajuste completo (A y B libres): 2 parametros
-    cv_full = _cv_brier(pares, ajustar_platt)
-    a2, b2 = ajustar_platt(pares)
-    opciones.append(("A y B libres", a2, b2, cv_full))
-
-    mejor = min(opciones, key=lambda o: o[3])
-    for etq, a, b, cv in opciones:
-        gana = "  <- mejor" if (etq, a, b, cv) == mejor else ""
-        signo = "MEJORA" if cv < base else "peor  "
-        print(f"    {etq:16s} A={a:+.3f} B={b:.2f}   CV Brier {cv:.4f} ({signo} vs {base:.4f}){gana}")
-
-    if mejor[3] < base - 0.0005:   # margen minimo para no perseguir ruido
-        print(f"  -> USAR: ML_CAL_A={mejor[1]:+.4f}  ML_CAL_B={mejor[2]:.4f}")
-        return mejor[1], mejor[2]
-    print("  -> NINGUNA capa mejora fuera de muestra de forma robusta. Dejar identidad (A=0, B=1).")
-    return 0.0, 1.0
+    # Ultimo 20% de fechas reservado; se selecciona candidato SOLO en desarrollo.
+    dias = sorted(set(fechas))
+    corte = dias[max(1, int(len(dias)*.8))]
+    n_dev = sum(f < corte for f in fechas)
+    dev, test = pares[:n_dev], pares[n_dev:]
+    fechas_dev = fechas[:n_dev]
+    opciones = [("Identidad", lambda tr: (0.0, 1.0))]
+    for b in (1.0, .85, .70):
+        opciones.append((f"Intercepto + B={b}", lambda tr, b=b: (ajustar_intercepto(tr, b), b)))
+    opciones.append(("Platt", ajustar_platt))
+    puntuados = [(nombre, aj, _cv_brier(dev, aj, fechas=fechas_dev)) for nombre, aj in opciones]
+    mejor = min(puntuados, key=lambda x: x[2])
+    a, b = mejor[1](dev)
+    calibrados = _aplicar(test, a, b)
+    base_rate = sum(y for _, y in dev) / len(dev)
+    baseline = [(base_rate, y) for _, y in test]
+    print(f"\n{nombre}: desarrollo={len(dev)}, holdout={len(test)} desde {corte}")
+    for etiqueta, _, score in puntuados:
+        print(f"  Desarrollo temporal {etiqueta}: Brier={score:.6f}")
+    print(f"  Candidato seleccionado ANTES del holdout: {mejor[0]}, A={a:.6f}, B={b:.6f}")
+    for etiqueta, datos in [("Crudo", test), ("Candidato", calibrados), ("Frecuencia local previa", baseline)]:
+        print(f"  Holdout {etiqueta}: Brier={_brier(datos):.6f}, logloss={_logloss(datos):.6f}")
+    print("  Diagnostico exploratorio: versiones mezcladas y legacy sin timestamp.")
+    print("  No promueve parametros automaticamente. Requiere validacion prospectiva y mercado.")
+    return a, b
 
 
 def _reporte_totales(nombre, pred, real, base_actual):
@@ -222,34 +249,32 @@ def _reporte_totales(nombre, pred, real, base_actual):
     factor = mr / mp if mp > 0 else 1.0
     print(f"\n{nombre}  (n={n})")
     print(f"  Media esperada {mp:.2f}  vs  real {mr:.2f}   bias {bias:+.3f}")
-    print(f"  Nivel * {factor:.4f} centra el sesgo.  "
-          f"AJUSTE_BASE {base_actual:.3f} -> {base_actual * factor:.3f}")
+    print(f"  Razon observado/esperado = {factor:.4f}; descriptiva, no parametro recomendado.")
     print("  OJO: valido solo si estas predicciones se generaron con el AJUSTE_BASE")
     print("  actual. Si acabas de cambiarlo, el historico viejo aun trae el nivel")
-    print("  anterior y esta sugerencia lo re-aplica: espera a regenerar y re-mide.")
+    print("  anterior. No re-simules el pasado con datos actuales: recoge nuevas predicciones.")
 
 
 def main(desde=None):
-    ml, f5, (tp, tr), (f5p, f5r) = _cargar_pares(desde)
+    ml, f5, (tp, tr), (f5p, f5r), fechas_ml, fechas_f5 = _cargar_pares(desde)
     print("=" * 64)
     print("           CALIBRACION DE PROBABILIDADES")
     print("=" * 64)
     print(f"Juegos con resultado: ML={len(ml)}  F5={len(f5)}")
 
-    _reporte_calibracion("MONEYLINE (gana la casa)", ml)
-    _reporte_calibracion("F5 — gana la casa", f5)
+    _reporte_calibracion("MONEYLINE (gana la casa)", ml, fechas_ml)
+    _reporte_calibracion("F5 — gana la casa", f5, fechas_f5)
 
     print("\n" + "-" * 64)
-    print("NIVEL DE TOTALES (independiente del ML: se cancela en el cociente)")
+    print("NIVEL DE TOTALES (diagnostico; tambien puede afectar ML)")
     _reporte_totales("TOTALES juego completo", tp, tr, AJUSTE_BASE)
     _reporte_totales("TOTALES F5", f5p, f5r, AJUSTE_BASE)
 
     print("\n" + "=" * 64)
     print("COMO LEERLO")
     print("  La capa sirve si baja el Brier/log-loss de TEST (fuera de muestra).")
-    print("  Pega A y B de 'todo' en ML_CAL_A / ML_CAL_B de modelo_diario.py.")
-    print("  Para totales, mueve AJUSTE_BASE al valor sugerido (afecta solo el")
-    print("  nivel de carreras; el moneyline no se mueve).")
+    print("  No copies parametros sin confirmar mejora prospectiva contra baseline y mercado.")
+    print("  No ajustes el nivel con un historico de versiones mezcladas.")
     return 0
 
 
