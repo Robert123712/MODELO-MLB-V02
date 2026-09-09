@@ -13,7 +13,8 @@
 #   5. (fecha, game_id) unico. La fecha va en la clave porque un juego
 #      pospuesto conserva su gamePk al reprogramarse: sin ella, la fila del dia
 #      suspendido y la del dia que si se jugo se ven como la misma.
-#   6. El game_id se jugo de verdad esa fecha (necesita red)
+#   6. El game_id se jugo de verdad esa fecha (necesita red). Solo aplica a
+#      fechas ya cerradas: un partido de hoy todavia no esta Final.
 #
 # Las filas legacy sin game_id se omiten de 5 y 6: son anteriores a esa columna
 # y no hay nada que comprobar en ellas.
@@ -30,6 +31,7 @@ import re
 import shutil
 import sys
 from collections import Counter
+from datetime import datetime
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -48,6 +50,12 @@ def _numero(valor):
         return float(valor)
     except (TypeError, ValueError):
         return None
+
+
+def _clave(fecha):
+    """mm/dd/YYYY -> (YYYY, mm, dd), comparable lexicograficamente."""
+    mm, dd, yyyy = fecha.split("/")
+    return (yyyy, mm, dd)
 
 
 def _gid(fila):
@@ -122,14 +130,24 @@ def revisar(filas, columnas, con_red=True):
                 vistas.add(clave)
 
     if con_red:
-        fechas = sorted({f["fecha"] for f in con_id})
+        # Solo fechas ya cerradas. Un partido de hoy todavia no esta Final, y
+        # tratarlo como "no se jugo esa fecha" haria que --reparar le borrara el
+        # game_id a la prediccion recien capturada.
+        hoy = datetime.now().strftime("%m/%d/%Y")
+        cerradas = [f for f in con_id if _clave(f["fecha"]) < _clave(hoy)]
+        pendientes = len(con_id) - len(cerradas)
+        if pendientes:
+            print(f"· {pendientes} filas de hoy o posteriores: su resultado aun no existe, "
+                  f"se revisaran cuando la fecha cierre.")
+
+        fechas = sorted({f["fecha"] for f in cerradas}, key=_clave)
         ajenas = []
         for i, fecha in enumerate(fechas, 1):
             print(f"  [{i}/{len(fechas)}] {fecha}", end="\r", flush=True)
             reales = _jugados(fecha)
             if reales is None:
                 continue
-            ajenas += [f for f in con_id if f["fecha"] == fecha and _gid(f) not in reales]
+            ajenas += [f for f in cerradas if f["fecha"] == fecha and _gid(f) not in reales]
         print(" " * 40, end="\r")
         if ajenas:
             problemas.append(
