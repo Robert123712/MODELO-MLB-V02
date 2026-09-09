@@ -42,6 +42,8 @@ probables y pronóstico de hits por bateador.
 - `tracker.py` — diario de apuestas: registro, calificación automática y ROI
 - `contrato_edgebook.py` — traduce el snapshot al formato que consume Edgebook
   (`docs/data/edgebook-latest.json`): marcador proyectado, probabilidad y pick
+- `metricas_edgebook.py` — publica el rendimiento del modelo como JSON
+  (`docs/data/edgebook-metrics.json`), separado por `model_version`
 - `verificar_historico.py` — integridad de `predicciones.csv`; lo corre el
   Action antes de publicar (`--reparar` arregla lo reparable)
 - `valor.py` — módulo de detección de valor (+EV) contra líneas reales (The Odds API)

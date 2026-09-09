@@ -50,6 +50,13 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python generar_json.py
 
+      # Despues del snapshot: las metricas se calculan sobre el historico que
+      # acaba de crecer. No bloquea la publicacion si falla — un fallo aqui deja
+      # las metricas viejas, que es mejor que perder la corrida entera.
+      - name: Calcular metricas para Edgebook
+        continue-on-error: true
+        run: python metricas_edgebook.py
+
       # Antes de publicar, no despues. Un historico corrupto no avisa solo:
       # produce metricas de calibracion que parecen validas y no lo son.
       # --sin-red revisa la estructura sin gastar llamadas extra a la API.
