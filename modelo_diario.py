@@ -1478,15 +1478,22 @@ def correr(fecha=None):
     if os.path.exists(archivo):
         with open(archivo, encoding="utf-8", newline="") as f:
             anteriores = list(csv.DictReader(f))
-    # Legacy sin ID permanece intacto; los nuevos se deduplican por gamePk.
-    existentes = {p.get("game_id") for p in anteriores if p.get("game_id")}
+    # Legacy sin ID permanece intacto; los nuevos se deduplican por (fecha, gamePk).
+    #
+    # La fecha forma parte de la clave porque un juego pospuesto CONSERVA su
+    # gamePk al reprogramarse. Con el gamePk solo, la fila del dia que se
+    # suspendio ocupa el id y la prediccion del dia en que el juego si se juega
+    # se descarta como duplicada. En el historial hay nueve juegos asi.
+    existentes = {(p.get("fecha"), p.get("game_id"))
+                  for p in anteriores if p.get("game_id")}
     guardadas = 0
     for fila in filas_csv:
         p = dict(zip(columnas, next(csv.reader(io.StringIO(fila)))))
-        if p["game_id"] in existentes:
+        clave = (p["fecha"], p["game_id"])
+        if clave in existentes:
             continue
         anteriores.append(p)
-        existentes.add(p["game_id"])
+        existentes.add(clave)
         guardadas += 1
     temporal = archivo + ".tmp"
     with open(temporal, "w", encoding="utf-8", newline="") as f:

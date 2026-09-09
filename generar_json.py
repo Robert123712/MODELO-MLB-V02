@@ -17,6 +17,7 @@ try:
 except Exception:
     pass
 
+import contrato_edgebook
 from app import SimularRequest, _ejecutar_simulacion
 
 
@@ -35,7 +36,18 @@ def generar(fecha=None):
         with open(ruta, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
 
+    # Snapshot en el formato que consume Edgebook, en archivos aparte: la pagina
+    # de GitHub Pages y Edgebook no deberian romperse el uno al otro.
+    edgebook = contrato_edgebook.envelope(data)
+    eb_con_fecha = f"docs/data/edgebook-{yyyy}-{mm}-{dd}.json"
+    for ruta in ("docs/data/edgebook-latest.json", eb_con_fecha):
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(edgebook, f, ensure_ascii=False)
+
     print(f"✅ {len(data['juegos'])} juegos → docs/data/latest.json y {con_fecha}", flush=True)
+    omitidos = edgebook["skipped_without_id"]
+    print(f"✅ {len(edgebook['games'])} juegos → docs/data/edgebook-latest.json"
+          + (f" ({omitidos} omitidos sin game_id)" if omitidos else ""), flush=True)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,10 @@ probables y pronóstico de hits por bateador.
 - `analisis_comparacion.py` / `comparar_resultados.py` — backtesting de una fecha contra resultados reales
 - `sync_docs.py` — regenera `docs/index.html` desde `templates/index.html` (córrelo tras editar la interfaz)
 - `tracker.py` — diario de apuestas: registro, calificación automática y ROI
+- `contrato_edgebook.py` — traduce el snapshot al formato que consume Edgebook
+  (`docs/data/edgebook-latest.json`): marcador proyectado, probabilidad y pick
+- `verificar_historico.py` — integridad de `predicciones.csv`; lo corre el
+  Action antes de publicar (`--reparar` arregla lo reparable)
 - `valor.py` — módulo de detección de valor (+EV) contra líneas reales (The Odds API)
 - `predicciones.csv` — histórico de predicciones (se genera al correr)
 
