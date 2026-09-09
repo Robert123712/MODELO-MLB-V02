@@ -13,6 +13,10 @@
 #   - Mercados secundarios. Run line, totales, F5 y NRFI siguen en el snapshot
 #     interno (docs/data/latest.json) para la pagina del modelo; aqui no.
 #
+# Si lleva key_factors: el pick sin explicacion obliga al usuario a creer o no
+# creer, sin nada en medio. Son deterministas y cada uno cita un numero del
+# modelo, para que la descripcion se pueda comprobar.
+#
 # Publica docs/data/edgebook-latest.json junto al snapshot de siempre. Archivos
 # separados a proposito: la pagina de GitHub Pages y Edgebook son consumidores
 # distintos y ninguno deberia romperse cuando el otro necesite un campo nuevo.
@@ -56,10 +60,93 @@ def _aviso(juego):
     return None
 
 
+def _factores(juego, lado_pick):
+    """Hasta tres factores que explican la proyeccion, en orden de peso.
+
+    Cada uno cita un numero que el modelo calculo, para que la descripcion del
+    pick se pueda comprobar en vez de tener que creerla. La tarjeta los redacta;
+    no los inventa.
+
+    Se ordenan poniendo primero los que APOYAN el pick, porque leer "el abridor
+    visitante llega mejor" debajo de un pick por la casa se lee como una
+    contradiccion. Los contrarios no se esconden: van despues, y la tarjeta los
+    marca. Que el modelo elija un lado a pesar de un factor en contra es
+    informacion, no algo que ocultar.
+    """
+    def lado(diferencia):
+        """Positivo favorece a la casa."""
+        return "home" if diferencia > 0 else "away"
+
+    def orden(mejor_es_casa, casa, visita):
+        """(mejor, peor) segun de que lado este la ventaja."""
+        return (casa, visita) if mejor_es_casa else (visita, casa)
+
+    codigos = _codigos()
+    cv = codigos.get(juego["visita"]) or juego["visita"]
+    cc = codigos.get(juego["casa"]) or juego["casa"]
+
+    candidatos = []
+
+    # FIP reciente del abridor: mas bajo es mejor, asi que la resta se invierte.
+    fip_v, fip_c = juego.get("fip_v_reciente"), juego.get("fip_c_reciente")
+    if fip_v is not None and fip_c is not None and abs(fip_v - fip_c) >= 0.75:
+        mejor, peor = orden(fip_c < fip_v,
+                            (juego["abridor_c"], fip_c),
+                            (juego["abridor_v"], fip_v))
+        candidatos.append((abs(fip_v - fip_c), {
+            "label": "Abridor",
+            "favors": lado(fip_v - fip_c),
+            "detail": f"{mejor[0]} llega con {mejor[1]:.2f} de FIP reciente; "
+                      f"{peor[0]} con {peor[1]:.2f}",
+        }))
+
+    bp_v, bp_c = juego.get("bullpen_v"), juego.get("bullpen_c")
+    if bp_v is not None and bp_c is not None and abs(bp_v - bp_c) >= 0.40:
+        mejor, peor = orden(bp_c < bp_v, (cc, bp_c), (cv, bp_v))
+        candidatos.append((abs(bp_v - bp_c), {
+            "label": "Bullpen",
+            "favors": lado(bp_v - bp_c),
+            "detail": f"el bullpen de {mejor[0]} tiene {mejor[1]:.2f} de FIP "
+                      f"contra {peor[1]:.2f} el de {peor[0]}",
+        }))
+
+    of_v = (juego.get("rg_v") or 0) * (juego.get("split_v") or 1)
+    of_c = (juego.get("rg_c") or 0) * (juego.get("split_c") or 1)
+    if abs(of_c - of_v) >= 0.50:
+        mejor, peor = orden(of_c > of_v, (cc, of_c), (cv, of_v))
+        candidatos.append((abs(of_c - of_v), {
+            "label": "Ofensiva",
+            "favors": lado(of_c - of_v),
+            "detail": f"{mejor[0]} produce {mejor[1]:.2f} carreras por juego "
+                      f"ajustadas contra {peor[1]:.2f} de {peor[0]}",
+        }))
+
+    park = juego.get("park")
+    if park is not None and abs(park - 1) >= 0.05:
+        candidatos.append((abs(park - 1) * 10, {
+            "label": "Parque",
+            "favors": None,
+            "detail": f"el parque {'favorece' if park > 1 else 'suprime'} la anotación "
+                      f"(factor {park:.2f})",
+        }))
+
+    def prioridad(entrada):
+        peso, factor = entrada
+        apoya = 0 if factor["favors"] == lado_pick else 1 if factor["favors"] is None else 2
+        return (apoya, -peso)
+
+    candidatos.sort(key=prioridad)
+    return [
+        {**factor, "supports_pick": factor["favors"] == lado_pick}
+        for _, factor in candidatos[:3]
+    ]
+
+
 def proyeccion(juego):
     """Traduce un juego del snapshot interno al formato que consume Edgebook."""
     p_casa, p_visita = juego["p_casa"], juego["p_visita"]
     gana_casa = p_casa >= p_visita
+    lado_pick = "home" if gana_casa else "away"
     equipo = juego["casa"] if gana_casa else juego["visita"]
     codigo = _codigos().get(equipo) or equipo
 
@@ -79,6 +166,9 @@ def proyeccion(juego):
             "label": f"{codigo} ML",
         },
         "data_warning": _aviso(juego),
+        # Por que el modelo eligio ese lado. Deterministas y trazables a un
+        # numero del modelo: la tarjeta los redacta, no los inventa.
+        "key_factors": _factores(juego, lado_pick),
     }
 
 
