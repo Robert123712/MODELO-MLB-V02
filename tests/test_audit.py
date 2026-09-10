@@ -171,6 +171,48 @@ class Pipeline(unittest.TestCase):
             finally:
                 os.chdir(old)
 
+    def test_refresco_republica_sin_tocar_el_historico(self):
+        # El historico admite una prediccion por juego y gana la primera. Si una
+        # corrida de refresco escribiera, el dia quedaria registrado con la
+        # prediccion menos informada —sin alineaciones, abridor estimado— y
+        # validar.py calificaria esa en vez de la que la pagina muestra.
+        import csv, os, tempfile
+        from contextlib import redirect_stdout
+        from io import StringIO
+        import tracker
+        with tempfile.TemporaryDirectory() as d:
+            old = os.getcwd()
+            previo = os.environ.get("REGISTRAR_HISTORICO")
+            try:
+                os.chdir(d)
+                games = [self.game]
+                parches = lambda: (
+                    patch.object(m.statsapi, 'schedule', return_value=games),
+                    patch.object(m, 'f5_frac_liga', return_value=.56),
+                    patch.object(valor, 'obtener_odds', return_value={}),
+                    patch.object(tracker, 'registrar'),
+                )
+                os.environ["REGISTRAR_HISTORICO"] = "0"
+                a, b, c, e = parches()
+                with a, b, c, e, redirect_stdout(StringIO()):
+                    m.correr('09/09/2026')
+                self.assertFalse(os.path.exists('predicciones.csv'))
+
+                # Y la corrida que si registra escribe con normalidad.
+                os.environ["REGISTRAR_HISTORICO"] = "1"
+                a, b, c, e = parches()
+                with a, b, c, e, redirect_stdout(StringIO()):
+                    m.correr('09/09/2026')
+                with open('predicciones.csv') as f:
+                    filas = list(csv.DictReader(f))
+                self.assertEqual([r['game_id'] for r in filas], ['123'])
+            finally:
+                os.chdir(old)
+                if previo is None:
+                    os.environ.pop("REGISTRAR_HISTORICO", None)
+                else:
+                    os.environ["REGISTRAR_HISTORICO"] = previo
+
 
 class Fits(unittest.TestCase):
     def test_degenerate_and_separated_data_are_finite(self):

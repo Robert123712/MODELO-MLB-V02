@@ -1,20 +1,41 @@
 # ============================================================
-# CORRIDA AUTOMATICA DIARIA
-#  - Corre el modelo y agrega las predicciones a predicciones.csv
-#  - Genera el JSON que alimenta la pagina de GitHub Pages (docs/)
+# CORRIDAS DEL MODELO
+#  - Corre el modelo y publica el JSON que alimentan GitHub Pages y Edgebook
 #  - Commitea y pushea los resultados a main
-# Horario: 16:30 UTC = 10:30am CDMX (cambia el cron si quieres otra hora)
-# Tambien se puede disparar a mano: pestana Actions -> Modelo diario -> Run workflow
-# Opcional: agrega el secret ODDS_API_KEY (Settings -> Secrets -> Actions)
-# para que la corrida incluya deteccion de valor (+EV) contra el mercado.
+#
+# Corre VARIAS veces al dia porque el slate cambia durante el dia: los abridores
+# se confirman, las alineaciones se publican y el clima se actualiza. Una sola
+# corrida deja la pagina congelada con la foto de la manana.
+#
+# Pero solo UNA de esas corridas escribe en predicciones.csv. El historico
+# admite una prediccion por juego y gana la primera: si registrara cualquier
+# corrida, el historico guardaria la MENOS informada del dia y validar.py
+# calificaria esa. La corrida de las 16:30 UTC registra —la misma hora de
+# siempre, para que las filas viejas y las nuevas midan lo mismo— y el resto
+# solo republica.
+#
+# A mano: pestana Actions -> Modelo diario -> Run workflow. Marca "registrar"
+# solo si quieres que ESA corrida sea la que quede en el historico del dia.
+# Opcional: el secret ODDS_API_KEY activa la deteccion de valor (+EV).
 # ============================================================
 
 name: Modelo diario
 
 on:
   schedule:
+    # La que registra en el historico. No la muevas sin entender lo de arriba.
     - cron: "30 16 * * *"
+    # Refrescos: republican la pagina sin tocar predicciones.csv.
+    - cron: "0 13 * * *"
+    - cron: "0 19 * * *"
+    - cron: "0 22 * * *"
+    - cron: "0 1 * * *"
   workflow_dispatch:
+    inputs:
+      registrar:
+        description: "Guardar esta corrida en predicciones.csv"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -27,9 +48,18 @@ jobs:
   correr:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Solo la corrida de las 16:30, o un disparo manual que lo pida a
+      # proposito, escribe en el historico.
+      REGISTRAR_HISTORICO: ${{ (github.event.schedule == '30 16 * * *' || inputs.registrar) && '1' || '0' }}
     steps:
+      # ref: main y no el SHA que disparo la corrida. Con varias corridas al dia
+      # una puede empezar despues de que otra ya pusheo; partir del SHA viejo
+      # haria que el push saliera rechazado por no ser fast-forward.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Python 3.11
         uses: actions/setup-python@v5
@@ -40,7 +70,7 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Correr modelo (guarda predicciones.csv)
+      - name: Correr modelo
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python modelo_diario.py
@@ -70,7 +100,17 @@ jobs:
           git add predicciones.csv docs/data/
           if git diff --cached --quiet; then
             echo "Sin cambios que commitear."
-          else
-            git commit -m "Corrida automatica $(date -u +%F)"
-            git push
+            exit 0
           fi
+          git commit -m "Corrida automatica $(date -u +%F)"
+          # Otra corrida pudo pushear mientras esta simulaba. Rebase y reintento
+          # en vez de fallar: el trabajo ya esta hecho, solo hay que ponerlo
+          # encima de lo que llego.
+          for intento in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push rechazado (intento $intento); rebase sobre origin/main."
+            git pull --rebase origin main
+          done
+          git push

@@ -1468,6 +1468,21 @@ def correr(fecha=None):
 
     # ---------------- GUARDADO (anti-duplicados, #6) ----------------
 
+    # El historico admite UNA prediccion por (fecha, gamePk) y gana la primera
+    # que se escribe. Mientras el modelo corria una vez al dia eso bastaba, pero
+    # al correr varias veces la primera del dia seria la MENOS informada: sin
+    # alineaciones y con abridores estimados. El historico acabaria midiendo una
+    # prediccion mas pobre que la que la pagina muestra, y validar.py calificaria
+    # esa.
+    #
+    # Por eso las corridas de refresco republican la pagina y NO tocan el CSV.
+    # La corrida que registra sigue siendo una al dia, a la misma hora de
+    # siempre, para que las 653 filas anteriores y las nuevas midan lo mismo.
+    if os.environ.get("REGISTRAR_HISTORICO", "1") == "0":
+        print("ℹ️  Corrida de refresco: se republica la pagina y NO se escribe "
+              "en predicciones.csv (el historico lo registra la corrida diaria).")
+        return
+
     archivo = "predicciones.csv"
     CABECERA = ("fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,"
                 "total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5,p_nrfi,game_id,generado_en,game_datetime,model_version,p_casa_calibrada\n")
