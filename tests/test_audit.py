@@ -8,6 +8,35 @@ import validar
 import valor
 
 
+class RunLine(unittest.TestCase):
+    """Cada equipo dando y recibiendo cada linea, no solo el par favorito."""
+
+    def setUp(self):
+        self.sim = m.simular_completo(4.2, 5.1)
+
+    def test_every_line_for_both_teams(self):
+        esperadas = {"-2.5", "-1.5", "+1.5", "+2.5"}
+        self.assertEqual(set(self.sim["rl_casa"]), esperadas)
+        self.assertEqual(set(self.sim["rl_visita"]), esperadas)
+
+    def test_opposite_sides_are_complements(self):
+        for linea in ("1.5", "2.5"):
+            self.assertAlmostEqual(
+                self.sim["rl_casa"][f"-{linea}"] + self.sim["rl_visita"][f"+{linea}"], 1)
+            self.assertAlmostEqual(
+                self.sim["rl_casa"][f"+{linea}"] + self.sim["rl_visita"][f"-{linea}"], 1)
+
+    def test_giving_runs_is_never_easier_than_receiving_them(self):
+        for equipo in ("rl_casa", "rl_visita"):
+            mercado = self.sim[equipo]
+            self.assertLessEqual(mercado["-2.5"], mercado["-1.5"])
+            self.assertLessEqual(mercado["-1.5"], mercado["+1.5"])
+            self.assertLessEqual(mercado["+1.5"], mercado["+2.5"])
+
+    def test_classic_field_still_means_home_minus_1_5(self):
+        self.assertEqual(self.sim["p_casa_rl"], self.sim["rl_casa"]["-1.5"])
+
+
 class Markets(unittest.TestCase):
     def test_integer_push(self):
         p = valor.probabilidades_total({7.5: .6, 8.5: .4}, 8)

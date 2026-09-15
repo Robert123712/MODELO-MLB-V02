@@ -1075,6 +1075,11 @@ def factor_defensivo(nombre_equipo):
 # reciencia contra el promedio simple... pero carreras_por_juego YA es ese
 # promedio ponderado (misma VIDA_MEDIA): aplicaba el mismo momentum ~1.2 veces.
 
+def _etiqueta_rl(linea):
+    """'-1.5' o '+1.5': el signo es parte del mercado, no adorno."""
+    return f"{'+' if linea > 0 else '-'}{abs(linea):g}"
+
+
 def simular_binom_neg(lam, n, k=DISPERSION_K):
     """ARREGLO 1: marcadores con binomial negativa (varianza > media).
     'k' configurable: el F5 usa una dispersion mas baja que el juego completo."""
@@ -1082,6 +1087,7 @@ def simular_binom_neg(lam, n, k=DISPERSION_K):
     return _rng().negative_binomial(k, p, n)
 
 LINEAS_TT = [2.5, 3.5, 4.5, 5.5]   # totales por equipo (team totals)
+LINEAS_RL = [1.5, 2.5]             # run line: el equipo da (-) o recibe (+) esa ventaja
 N_MARCADORES = 5                    # top de marcadores mas probables
 TOPE_DIST = 24                      # ultimo bin de la distribucion del total (agrupa 'N o mas').
                                     # 24 deja la cola residual en ~1% incluso en juegos de
@@ -1126,6 +1132,18 @@ def simular_completo(lam_v, lam_c):
     tt_v = {ln: (c_v > ln).mean() for ln in LINEAS_TT}
     tt_c = {ln: (c_c > ln).mean() for ln in LINEAS_TT}
 
+    # Run line completa: cada equipo dando y recibiendo cada linea.
+    # El margen simulado incluye empates, que en un juego real no existen: se
+    # resuelven en entradas extra. No altera estas lineas, porque un empate
+    # desempatado por una carrera sigue sin cubrir -1.5 y sigue cubriendo +1.5.
+    # Lo que si queda fuera es la extra que termina por dos o mas carreras,
+    # poco frecuente y sin modelo propio aqui.
+    margen = c_c - c_v
+    rl_c = {_etiqueta_rl(-ln): (margen >= math.ceil(ln)).mean() for ln in LINEAS_RL}
+    rl_c.update({_etiqueta_rl(ln): (margen >= -math.floor(ln)).mean() for ln in LINEAS_RL})
+    rl_v = {_etiqueta_rl(-ln): (-margen >= math.ceil(ln)).mean() for ln in LINEAS_RL}
+    rl_v.update({_etiqueta_rl(ln): (-margen >= -math.floor(ln)).mean() for ln in LINEAS_RL})
+
     # marcadores mas probables (codifica el par casa-visita en un entero)
     codigo = c_c * 1000 + c_v
     vals, counts = np.unique(codigo, return_counts=True)
@@ -1143,7 +1161,9 @@ def simular_completo(lam_v, lam_c):
     return {
         "overs": overs,
         "p_casa": gana_c.mean(),
-        "p_casa_rl": ((c_c - c_v) >= 2).mean(),
+        "p_casa_rl": rl_c["-1.5"],
+        "rl_casa": rl_c,
+        "rl_visita": rl_v,
         "tt_visita": tt_v,
         "tt_casa": tt_c,
         "marcadores": marcadores,
@@ -1334,6 +1354,7 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
         "p_casa": calibrar_ml(sim["p_casa"]), "p_visita": 1 - calibrar_ml(sim["p_casa"]),
         "p_casa_cruda": sim["p_casa"],
         "p_casa_rl": sim["p_casa_rl"], "p_visita_rl": 1 - sim["p_casa_rl"],
+        "rl_casa": sim["rl_casa"], "rl_visita": sim["rl_visita"],
         "tt_visita": sim["tt_visita"], "tt_casa": sim["tt_casa"],
         "marcadores": sim["marcadores"],
         "dist_total": sim["dist_total"],
