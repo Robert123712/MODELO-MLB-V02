@@ -48,6 +48,26 @@ def api_simular(req: SimularRequest):
                 content={"error": "La simulación tardó demasiado. Reintenta o revisa conexión a las APIs de MLB."},
             )
 
+def _r(x, n=2):
+    return round(x, n) if x is not None else None
+
+
+def mercados(r):
+    """Mercados derivados de la simulacion, listos para publicar.
+
+    Viven aparte porque la lista de campos que sale es explicita: sin esto, un
+    mercado nuevo se calcula en el simulador y se pierde aqui sin que nada avise.
+    """
+    return {
+        "p_casa_rl": _r(r["p_casa_rl"], 4), "p_visita_rl": _r(r["p_visita_rl"], 4),
+        "rl_visita": {k: round(val, 4) for k, val in r["rl_visita"].items()},
+        "rl_casa": {k: round(val, 4) for k, val in r["rl_casa"].items()},
+        "overs": {str(k): round(val, 4) for k, val in r["overs"].items()},
+        "tt_visita": {str(k): round(val, 4) for k, val in r["tt_visita"].items()},
+        "tt_casa": {str(k): round(val, 4) for k, val in r["tt_casa"].items()},
+    }
+
+
 def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
     """Evalua un juego y lo serializa a JSON para la web. Toda la matematica
     vive en modelo_diario.evaluar_juego(): aqui solo se da formato."""
@@ -58,9 +78,6 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
     pv, pc, f5 = r["pv"], r["pc"], r["f5"]
     jugadas = v.analizar_juego(v.buscar(odds_slate, r["visita"], r["casa"]),
                                r["visita"], r["casa"], r["p_casa"], r["overs"])
-
-    def _r(x, n=2):
-        return round(x, n) if x is not None else None
 
     juego_dict = {
         "game_id": r["game_id"], "game_datetime": r["game_datetime"],
@@ -86,10 +103,7 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
         "def_v": _r(r["def_v"], 3), "def_c": _r(r["def_c"], 3),
         "lam_v": _r(r["lam_v"]), "lam_c": _r(r["lam_c"]),
         "p_casa": _r(r["p_casa"], 4), "p_visita": _r(r["p_visita"], 4),
-        "p_casa_rl": _r(r["p_casa_rl"], 4), "p_visita_rl": _r(r["p_visita_rl"], 4),
-        "overs": {str(k): round(val, 4) for k, val in r["overs"].items()},
-        "tt_visita": {str(k): round(val, 4) for k, val in r["tt_visita"].items()},
-        "tt_casa": {str(k): round(val, 4) for k, val in r["tt_casa"].items()},
+        **mercados(r),
         "marcadores": [{"casa": mc["casa"], "visita": mc["visita"], "p": round(mc["p"], 4)}
                        for mc in r["marcadores"]],
         "dist_total": [round(float(x), 5) for x in r["dist_total"]],

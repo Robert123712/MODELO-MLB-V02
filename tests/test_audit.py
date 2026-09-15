@@ -37,6 +37,18 @@ class RunLine(unittest.TestCase):
         self.assertEqual(self.sim["p_casa_rl"], self.sim["rl_casa"]["-1.5"])
 
 
+class PublishedMarkets(unittest.TestCase):
+    """Lo que el simulador calcula tiene que llegar al JSON que se publica."""
+
+    def test_run_line_reaches_the_payload(self):
+        import app
+        sim = m.simular_completo(4.2, 5.1)
+        publicado = app.mercados({**sim, "p_visita_rl": 1 - sim["p_casa_rl"]})
+        for equipo in ("rl_casa", "rl_visita"):
+            self.assertEqual(set(publicado[equipo]), {"-2.5", "-1.5", "+1.5", "+2.5"})
+        self.assertEqual(publicado["p_casa_rl"], round(sim["rl_casa"]["-1.5"], 4))
+
+
 class Markets(unittest.TestCase):
     def test_integer_push(self):
         p = valor.probabilidades_total({7.5: .6, 8.5: .4}, 8)
