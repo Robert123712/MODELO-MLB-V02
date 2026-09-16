@@ -40,6 +40,9 @@ except Exception:
 
 ESPN = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard"
 ARCHIVO = "precios.csv"
+# Donde queda constancia de que ESPN no mando precio de ganador, con las llaves
+# que si mando. Vive en docs/data/ porque esa carpeta ya se publica.
+DIAGNOSTICO = "docs/data/diagnostico-momios.json"
 COLUMNAS = ["fecha", "espn_id", "comienza", "capturado_en", "minutos_antes",
             "visita", "casa", "momio_visita", "momio_casa", "total",
             "run_line_casa", "casa_de_apuestas"]
@@ -191,10 +194,21 @@ def capturar(fecha, descargar=bajar):
     filas = [{"fecha": fecha, **fila} for fila in observaciones(payload, capturado)]
     if filas and all(f["momio_casa"] is None and f["momio_visita"] is None for f in filas):
         # Todas las filas sin precio de ganador: o ESPN no lo da, o vive en otra
-        # ruta. Las llaves lo dicen sin tener que abrir el payload a mano.
-        for muestra in forma_de_los_momios(payload):
+        # ruta. Se escribe en docs/data/, que el workflow ya publica, en vez de
+        # solo imprimirlo: un log de Actions caduca y hay que bajarlo entero
+        # para leer tres lineas.
+        muestras = forma_de_los_momios(payload)
+        for muestra in muestras:
             print(f"   sin moneyline · llaves={muestra['llaves']} "
                   f"home={muestra['homeTeamOdds']} away={muestra['awayTeamOdds']}", flush=True)
+        try:
+            os.makedirs("docs/data", exist_ok=True)
+            with open(DIAGNOSTICO, "w", encoding="utf-8") as f:
+                json.dump({"revisado_en": filas[0]["capturado_en"], "fecha": fecha,
+                           "juegos_sin_moneyline": len(filas), "muestras": muestras},
+                          f, ensure_ascii=False, indent=1)
+        except OSError as e:
+            print(f"⚠ No se pudo escribir {DIAGNOSTICO}: {e}")
     return filas
 
 
