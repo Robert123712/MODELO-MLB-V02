@@ -80,9 +80,18 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python generar_json.py
 
-      # La linea de cierre se consulta DESPUES del juego, cuando ya es definitiva.
-      # Si falla, la corrida sigue: un dia sin cierre no justifica perder la
-      # publicacion, y la proxima corrida reintenta esa fecha sola.
+      # El precio del mercado se anota MIENTRAS existe: cada corrida guarda lo
+      # que ve de los juegos que todavia no empiezan. La linea de cierre sale
+      # despues de aqui, como la ultima observacion antes del primer pitcheo, en
+      # vez de pedirsela a un proveedor que no esta obligado a conservarla.
+      # Por eso corre en las cinco corridas del dia y no solo en la que registra.
+      - name: Anotar el precio del mercado
+        continue-on-error: true
+        run: python precios.py
+
+      # Intento retroactivo, que hasta hoy devuelve cero. Se queda mientras su
+      # diagnostico dice si ESPN publica momios de juegos ya jugados; si resulta
+      # que no, sobra y se va.
       - name: Guardar la linea de cierre
         continue-on-error: true
         run: python cierres.py
@@ -105,7 +114,8 @@ jobs:
           git config user.name "modelo-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add predicciones.csv docs/data/
-          # cierres.csv no existe hasta la primera captura con cruce.
+          # Ninguno de los dos existe hasta su primera captura con datos.
+          if [ -f precios.csv ]; then git add precios.csv; fi
           if [ -f cierres.csv ]; then git add cierres.csv; fi
           if git diff --cached --quiet; then
             echo "Sin cambios que commitear."

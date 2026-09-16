@@ -1,9 +1,11 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 import math
 import numpy as np
 import calibrar
 import cierres
+import precios
 import modelo_diario as m
 import validar
 import valor
@@ -518,6 +520,100 @@ class Fits(unittest.TestCase):
             self.assertTrue(math.isfinite(a) and math.isfinite(b))
             self.assertGreaterEqual(b,0)
             self.assertLessEqual(calibrar._logloss(calibrar._aplicar(pairs,a,b)),calibrar._logloss(pairs)+1e-9)
+
+
+def _juego_espn(visita, casa, comienza, odds, identificador="401"):
+    return {"id": identificador, "date": comienza,
+            "competitions": [{"id": identificador, "date": comienza,
+                              "competitors": [
+                                  {"homeAway": "home", "team": {"displayName": casa}},
+                                  {"homeAway": "away", "team": {"displayName": visita}}],
+                              "odds": [odds] if odds else []}]}
+
+
+PRECIO_VIVO = {"provider": {"displayName": "ESPN BET"}, "overUnder": 8.5, "spread": -1.5,
+               "homeTeamOdds": {"moneyLine": -145}, "awayTeamOdds": {"moneyLine": 125}}
+AHORA = "2026-09-16T18:00:00+00:00"
+
+
+class PreciosObservados(unittest.TestCase):
+    """El precio se anota mientras existe; despues del juego ya no hay que pedirlo."""
+
+    def test_records_a_game_that_has_not_started(self):
+        payload = {"events": [_juego_espn("Miami Marlins", "Arizona Diamondbacks",
+                                          "2026-09-16T23:10Z", PRECIO_VIVO)]}
+        fila = precios.observaciones(payload, AHORA)[0]
+        self.assertEqual(fila["momio_casa"], -145)
+        self.assertEqual(fila["momio_visita"], 125)
+        self.assertEqual(fila["total"], 8.5)
+        self.assertEqual(fila["run_line_casa"], -1.5)
+        # 18:00 -> 23:10 son cinco horas y diez minutos. Ese hueco es lo que
+        # despues permite decir si la observacion merece llamarse cierre.
+        self.assertEqual(fila["minutos_antes"], 310)
+
+    def test_a_game_already_started_is_not_a_forecast_anymore(self):
+        payload = {"events": [_juego_espn("Miami Marlins", "Arizona Diamondbacks",
+                                          "2026-09-16T17:00Z", PRECIO_VIVO)]}
+        self.assertEqual(precios.observaciones(payload, AHORA), [])
+
+    def test_a_game_without_price_is_skipped_not_blank(self):
+        payload = {"events": [_juego_espn("A Team", "B Team", "2026-09-16T23:10Z", None)]}
+        self.assertEqual(precios.observaciones(payload, AHORA), [])
+
+    def test_a_doubleheader_keeps_both_games(self):
+        """cierres.py tenia que tirarlas: cruzaba por nombres y el par apuntaba a dos
+        juegos. Aqui cada juego trae su id y su hora, asi que se guardan los dos."""
+        payload = {"events": [
+            _juego_espn("Miami Marlins", "Arizona Diamondbacks", "2026-09-16T20:10Z",
+                        PRECIO_VIVO, identificador="401a"),
+            _juego_espn("Miami Marlins", "Arizona Diamondbacks", "2026-09-17T00:10Z",
+                        PRECIO_VIVO, identificador="401b")]}
+        filas = precios.observaciones(payload, AHORA)
+        self.assertEqual(len(filas), 2)
+        self.assertEqual({f["espn_id"] for f in filas}, {"401a", "401b"})
+        self.assertNotEqual(filas[0]["minutos_antes"], filas[1]["minutos_antes"])
+
+    def test_several_observations_of_one_game_are_all_kept(self):
+        """La ultima antes del inicio es el cierre; las anteriores son el movimiento
+        de linea, que el precio final ya no cuenta."""
+        payload = lambda momio: {"events": [_juego_espn(
+            "Miami Marlins", "Arizona Diamondbacks", "2026-09-16T23:10Z",
+            {**PRECIO_VIVO, "homeTeamOdds": {"moneyLine": momio}})]}
+        temprano = precios.observaciones(payload(-130), "2026-09-16T14:00:00+00:00")
+        tarde = precios.observaciones(payload(-160), "2026-09-16T22:30:00+00:00")
+        self.assertEqual(temprano[0]["momio_casa"], -130)
+        self.assertEqual(tarde[0]["momio_casa"], -160)
+        # Mismo juego, distinta hora: son dos hechos, no una correccion.
+        self.assertEqual(temprano[0]["espn_id"], tarde[0]["espn_id"])
+        self.assertLess(tarde[0]["minutos_antes"], temprano[0]["minutos_antes"])
+
+    def test_saving_adds_without_ever_overwriting(self):
+        """Una observacion es un hecho fechado. Si una corrida pisara a la
+        anterior, el movimiento de linea se perderia y solo quedaria la ultima
+        foto, que es justo lo que este archivo existe para evitar."""
+        import tempfile
+        fila = lambda hora, momio: {
+            "fecha": "09/16/2026", "espn_id": "401", "comienza": "2026-09-16T23:10:00+00:00",
+            "capturado_en": hora, "minutos_antes": 60, "visita": "Miami Marlins",
+            "casa": "Arizona Diamondbacks", "momio_visita": 125, "momio_casa": momio,
+            "total": 8.5, "run_line_casa": -1.5, "casa_de_apuestas": "ESPN BET"}
+        with tempfile.TemporaryDirectory() as carpeta:
+            original = precios.ARCHIVO
+            precios.ARCHIVO = str(Path(carpeta) / "precios.csv")
+            try:
+                self.assertEqual(precios.guardar([fila("2026-09-16T14:00:00+00:00", -130)]), 1)
+                self.assertEqual(precios.guardar([fila("2026-09-16T22:30:00+00:00", -160)]), 1)
+                # La misma corrida repetida no duplica: mismo juego y misma hora.
+                self.assertEqual(precios.guardar([fila("2026-09-16T22:30:00+00:00", -160)]), 0)
+                guardadas = precios._leidas()
+            finally:
+                precios.ARCHIVO = original
+        self.assertEqual([g["momio_casa"] for g in guardadas], ["-130", "-160"])
+
+    def test_a_failed_request_writes_nothing(self):
+        def falla(url):
+            raise RuntimeError("sin red")
+        self.assertEqual(precios.capturar("09/16/2026", falla), [])
 
 
 if __name__ == "__main__":
