@@ -65,8 +65,14 @@ def _mercado(pares, referencia):
     if not pares:
         return None
     aciertos = sum(1 for p, y in pares if (p >= 0.5) == (y == 1))
+    ocurrio = sum(y for _, y in pares) / len(pares)
     return {
         "n": len(pares),
+        # Con que frecuencia paso el evento. De aqui sale la regla fija: decir
+        # siempre que si acierta esto, decir siempre que no acierta lo contrario.
+        # Sin esa referencia, un acierto alto puede ser solo el equipo local
+        # ganando seguido, y no el modelo eligiendo bien.
+        "base_rate": round(ocurrio, 4),
         "brier": round(validar.brier(pares), 4),
         "log_loss": round(validar.log_loss(pares), 4),
         "hit_rate": round(aciertos / len(pares), 4),
@@ -86,10 +92,7 @@ def _mercado(pares, referencia):
     }
 
 
-def _error_total(errores):
-    """MAE y sesgo del marcador proyectado. El sesgo dice hacia que lado falla."""
-    if not errores:
-        return None
+def _resumen_error(errores):
     n = len(errores)
     media = sum(errores) / n
     return {
@@ -102,6 +105,26 @@ def _error_total(errores):
         "std_error": round(
             (sum((e - media) ** 2 for e in errores) / n / n) ** 0.5, 4
         ),
+    }
+
+
+def _error_total(fechados):
+    """MAE y sesgo del marcador proyectado, con su desglose por mes.
+
+    El total acumulado dice que el modelo proyecta corto, pero no si eso es de
+    siempre o del mes que corre: septiembre no se anota como abril. Sin el
+    desglose, mover la calibracion seria perseguir al ultimo mes.
+    """
+    if not fechados:
+        return None
+    por_mes = defaultdict(list)
+    for fecha, error in fechados:
+        mes, _, anio = fecha.split("/")
+        por_mes[f"{anio}-{mes}"].append(error)
+    return {
+        **_resumen_error([error for _, error in fechados]),
+        "by_month": [{"month": mes, **_resumen_error(errores)}
+                     for mes, errores in sorted(por_mes.items())],
     }
 
 
@@ -160,7 +183,7 @@ def recolectar():
 
         esperado = validar._f(p, "total_esp")
         if esperado is not None:
-            c["totales"].append(esperado - total_real)
+            c["totales"].append((p["fecha"], esperado - total_real))
 
         if real["f5v"] is not None:
             anotar("first_five", "p_casa_f5", real["f5c"] > real["f5v"])

@@ -3,6 +3,7 @@ from unittest.mock import patch
 import math
 import numpy as np
 import calibrar
+import cierres
 import modelo_diario as m
 import validar
 import valor
@@ -35,6 +36,95 @@ class RunLine(unittest.TestCase):
 
     def test_classic_field_still_means_home_minus_1_5(self):
         self.assertEqual(self.sim["p_casa_rl"], self.sim["rl_casa"]["-1.5"])
+
+
+def _evento(visita, casa, odds):
+    return {"competitions": [{
+        "competitors": [
+            {"homeAway": "away", "team": {"displayName": visita}},
+            {"homeAway": "home", "team": {"displayName": casa}},
+        ],
+        "odds": [odds] if odds else [],
+    }]}
+
+
+CIERRE_ESPN = {
+    "provider": {"displayName": "ESPN BET"},
+    "overUnder": 8.5,
+    "spread": -1.5,
+    "moneyline": {"home": {"close": {"odds": -145}}, "away": {"close": {"odds": 125}}},
+    "pointSpread": {"home": {"close": {"line": -1.5}}},
+}
+
+
+class ClosingLine(unittest.TestCase):
+    """El precio de cierre solo existe si se guarda: pasado el juego nadie lo republica."""
+
+    def test_reads_the_closing_price_of_each_game(self):
+        payload = {"events": [_evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN)]}
+        mercado = cierres.leer_marcador(payload)
+        cierre = mercado[("Marlins", "Diamondbacks")]
+        self.assertEqual(cierre["momio_casa"], -145)
+        self.assertEqual(cierre["momio_visita"], 125)
+        self.assertEqual(cierre["total"], 8.5)
+        self.assertEqual(cierre["casa_de_apuestas"], "ESPN BET")
+
+    def test_falls_back_to_the_flat_price_when_close_is_missing(self):
+        odds = {"overUnder": 9.5, "homeTeamOdds": {"moneyLine": -110},
+                "awayTeamOdds": {"moneyLine": -105}}
+        cierre = cierres.leer_marcador({"events": [_evento("A Team", "B Team", odds)]})
+        valores = next(iter(cierre.values()))
+        self.assertEqual(valores["momio_casa"], -110)
+        self.assertEqual(valores["total"], 9.5)
+
+    def test_a_game_without_odds_is_skipped_not_invented(self):
+        self.assertEqual(cierres.leer_marcador({"events": [_evento("A Team", "B Team", None)]}), {})
+        vacio = {"provider": {"displayName": "x"}}
+        self.assertEqual(cierres.leer_marcador({"events": [_evento("A", "B", vacio)]}), {})
+
+    def test_a_doubleheader_is_left_out(self):
+        payload = {"events": [_evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN),
+                              _evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN)]}
+        self.assertEqual(cierres.leer_marcador(payload), {})
+
+    def test_capture_matches_predictions_by_teams_and_date(self):
+        payload = {"events": [_evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN)]}
+        predicciones = [
+            {"fecha": "09/15/2026", "game_id": "1", "visita": "Miami Marlins",
+             "casa": "Arizona Diamondbacks"},
+            {"fecha": "09/14/2026", "game_id": "2", "visita": "Miami Marlins",
+             "casa": "Arizona Diamondbacks"},
+        ]
+        filas = cierres.capturar("09/15/2026", predicciones, lambda url: payload)
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(filas[0]["game_id"], "1")
+        self.assertEqual(filas[0]["momio_casa"], -145)
+
+    def test_a_prediction_without_market_gets_no_price(self):
+        payload = {"events": [_evento("Otro Team", "Mas Otro", CIERRE_ESPN)]}
+        filas = cierres.capturar("09/15/2026", [
+            {"fecha": "09/15/2026", "game_id": "1", "visita": "Miami Marlins",
+             "casa": "Arizona Diamondbacks"}], lambda url: payload)
+        self.assertEqual(filas, [])
+
+    def test_pending_dates_exclude_today_and_what_is_already_saved(self):
+        predicciones = [
+            {"fecha": "09/12/2026", "game_id": "0"},
+            {"fecha": "09/14/2026", "game_id": "1"},
+            {"fecha": "09/15/2026", "game_id": "2"},
+            {"fecha": "09/16/2026", "game_id": "3"},
+        ]
+        guardados = [{"fecha": "09/14/2026", "game_id": "1"}]
+        # Hoy no, porque los juegos no han cerrado. La mas reciente primero:
+        # los juegos de ayer valen mas que rellenar julio.
+        self.assertEqual(
+            cierres.fechas_pendientes(predicciones, guardados, "09/16/2026"),
+            ["09/15/2026", "09/12/2026"])
+
+    def test_a_network_failure_returns_nothing_instead_of_raising(self):
+        def falla(url):
+            raise OSError("sin red")
+        self.assertEqual(cierres.capturar("09/15/2026", [], falla), [])
 
 
 class GradedMarkets(unittest.TestCase):
@@ -108,6 +198,31 @@ class GradedMarkets(unittest.TestCase):
         # Casa anoto 7 y 1: pasa de 4.5 una vez. Visita anoto 2 y 3: nunca.
         self.assertEqual(mercados["team_total_casa_45"]["hit_rate"], 0.5)
         self.assertEqual(mercados["team_total_visita_45"]["hit_rate"], 1.0)
+
+    def test_publishes_how_often_the_event_happened(self):
+        datos = self.recolectar(*self.datos())
+        mercados = datos["versions"][0]["markets"]
+        # La casa gano uno de dos juegos, y el modelo se inclinaba por ella.
+        self.assertEqual(mercados["moneyline"]["base_rate"], 0.5)
+        self.assertEqual(mercados["moneyline"]["hit_rate"], 0.5)
+        # Casa recibiendo 2.5 cubrio en los dos: la regla fija de decir siempre
+        # que si acierta el 100%, igual que el modelo. Sin este dato, su acierto
+        # perfecto parece merito.
+        self.assertEqual(mercados["run_line_casa_p25"]["base_rate"], 1.0)
+
+    def test_bias_is_broken_down_by_month(self):
+        predicciones, reales = self.datos()
+        predicciones[1] = {**predicciones[1], "fecha": "08/01/2026"}
+        reales["08/01/2026"] = {("2",): reales["09/16/2026"][("2",)]}
+        del reales["09/16/2026"][("2",)]
+        total = self.recolectar(predicciones, reales)["versions"][0]["projected_total"]
+        meses = {m["month"]: m for m in total["by_month"]}
+        self.assertEqual(sorted(meses), ["2026-08", "2026-09"])
+        self.assertEqual(sum(m["n"] for m in meses.values()), total["n"])
+        # 8.5 esperadas contra 4 reales en agosto: proyecto 4.5 de mas.
+        self.assertEqual(meses["2026-08"]["bias"], 4.5)
+        # Contra 9 reales en septiembre: proyecto 0.5 de menos.
+        self.assertEqual(meses["2026-09"]["bias"], -0.5)
 
     def test_a_line_without_column_is_never_invented(self):
         predicciones, reales = self.datos()
