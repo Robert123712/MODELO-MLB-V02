@@ -610,6 +610,27 @@ class PreciosObservados(unittest.TestCase):
                 precios.ARCHIVO = original
         self.assertEqual([g["momio_casa"] for g in guardadas], ["-130", "-160"])
 
+    def test_reports_the_odds_shape_when_the_moneyline_is_missing(self):
+        """La primera captura real trajo total y run line pero ningun moneyline.
+        Desde fuera eso no distingue "ESPN no lo publica" de "lo publica en otra
+        ruta"; las llaves del bloque si lo dicen."""
+        sin_ml = {"provider": {"displayName": "DraftKings"}, "overUnder": 8.5,
+                  "spread": -1.5, "details": "STL -1.5"}
+        payload = {"events": [_juego_espn("Miami Marlins", "Arizona Diamondbacks",
+                                          "2026-09-16T23:10Z", sin_ml)]}
+        # La fila se guarda igual: el total y la run line si sirven.
+        fila = precios.observaciones(payload, AHORA)[0]
+        self.assertIsNone(fila["momio_casa"])
+        self.assertEqual(fila["total"], 8.5)
+        muestra = precios.forma_de_los_momios(payload)[0]
+        self.assertIn("overUnder", muestra["llaves"])
+        self.assertIn("details", muestra["llaves"])
+
+    def test_a_game_with_a_moneyline_is_not_reported_as_missing(self):
+        payload = {"events": [_juego_espn("Miami Marlins", "Arizona Diamondbacks",
+                                          "2026-09-16T23:10Z", PRECIO_VIVO)]}
+        self.assertEqual(precios.forma_de_los_momios(payload), [])
+
     def test_a_failed_request_writes_nothing(self):
         def falla(url):
             raise RuntimeError("sin red")

@@ -84,6 +84,34 @@ def _precio(odds):
     }
 
 
+def forma_de_los_momios(payload, limite=2):
+    """Que campos trae de verdad el bloque de momios, cuando falta el moneyline.
+
+    La primera captura real trajo total y run line pero ningun precio de ganador,
+    y el moneyline es el mercado principal del modelo. Desde fuera no se
+    distingue "ESPN no lo publica" de "lo publica en otra ruta que no estamos
+    leyendo". Esto imprime las llaves disponibles para que una corrida lo diga,
+    en vez de adivinar la estructura.
+    """
+    muestras = []
+    for evento in payload.get("events", []):
+        for competencia in evento.get("competitions", []):
+            odds = next((o for o in competencia.get("odds", []) if isinstance(o, dict)), None)
+            if not odds:
+                continue
+            precio = _precio(odds)
+            if precio["momio_casa"] is not None or precio["momio_visita"] is not None:
+                continue
+            muestras.append({
+                "llaves": sorted(odds.keys()),
+                "homeTeamOdds": sorted((odds.get("homeTeamOdds") or {}).keys()),
+                "awayTeamOdds": sorted((odds.get("awayTeamOdds") or {}).keys()),
+            })
+            if len(muestras) >= limite:
+                return muestras
+    return muestras
+
+
 def observaciones(payload, capturado_en):
     """Una fila por juego con precio que todavia no empieza.
 
@@ -160,7 +188,14 @@ def capturar(fecha, descargar=bajar):
         print(f"⚠ Sin precios para {fecha}: {e}")
         return []
     capturado = datetime.now(timezone.utc).isoformat()
-    return [{"fecha": fecha, **fila} for fila in observaciones(payload, capturado)]
+    filas = [{"fecha": fecha, **fila} for fila in observaciones(payload, capturado)]
+    if filas and all(f["momio_casa"] is None and f["momio_visita"] is None for f in filas):
+        # Todas las filas sin precio de ganador: o ESPN no lo da, o vive en otra
+        # ruta. Las llaves lo dicen sin tener que abrir el payload a mano.
+        for muestra in forma_de_los_momios(payload):
+            print(f"   sin moneyline · llaves={muestra['llaves']} "
+                  f"home={muestra['homeTeamOdds']} away={muestra['awayTeamOdds']}", flush=True)
+    return filas
 
 
 def main(argv):
