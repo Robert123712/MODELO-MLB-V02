@@ -5,6 +5,7 @@ import math
 import numpy as np
 import calibrar
 import cierres
+import metricas_edgebook
 import precios
 import modelo_diario as m
 import validar
@@ -520,6 +521,35 @@ class Fits(unittest.TestCase):
             self.assertTrue(math.isfinite(a) and math.isfinite(b))
             self.assertGreaterEqual(b,0)
             self.assertLessEqual(calibrar._logloss(calibrar._aplicar(pairs,a,b)),calibrar._logloss(pairs)+1e-9)
+
+
+class TotalesF5(unittest.TestCase):
+    """Lo que la pantalla enseña de las primeras cinco tiene que quedar medido."""
+
+    def test_every_published_f5_line_is_recorded_and_graded(self):
+        # Tres listas que tienen que coincidir: lo que simula, lo que el
+        # historico guarda y lo que se califica. Si alguien agrega una linea en
+        # una sola, esto lo detiene: asi nacio el hueco que tenia cinco lineas
+        # en pantalla y una sola columna en el CSV.
+        for linea in m.LINEAS_F5:
+            sufijo = str(linea).replace(".", "")
+            self.assertIn(f"p_over{sufijo}_f5", m.COLUMNAS_HISTORICO,
+                          f"la linea F5 {linea} se publica pero no se registra")
+        self.assertEqual(sorted(m.LINEAS_F5), sorted(metricas_edgebook.LINEAS_F5),
+                         "el simulador y el calificador no miden las mismas lineas F5")
+
+    def test_the_new_lines_are_the_ones_asked_for(self):
+        self.assertIn(2.5, m.LINEAS_F5)
+        self.assertIn(6.5, m.LINEAS_F5)
+
+    def test_the_f5_total_is_graded_against_the_runs_of_five_innings(self):
+        # 2 + 3 = 5 carreras tras cinco entradas: pasa 4.5, no pasa 5.5.
+        real = {"rv": 6, "rc": 4, "f5v": 2, "f5c": 3, "inn1": 0}
+        total_f5 = real["f5v"] + real["f5c"]
+        self.assertTrue(total_f5 > 2.5)
+        self.assertTrue(total_f5 > 4.5)
+        self.assertFalse(total_f5 > 5.5)
+        self.assertFalse(total_f5 > 6.5)
 
 
 def _juego_espn(visita, casa, comienza, odds, identificador="401"):

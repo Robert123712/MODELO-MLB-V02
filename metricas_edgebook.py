@@ -46,6 +46,11 @@ MINIMO_SIGNIFICATIVO = 100
 # llamadas.
 LINEAS_TOTAL = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
 LINEAS_TT = [2.5, 3.5, 4.5, 5.5]
+# Totales de las primeras cinco entradas. Se publicaban en pantalla sin
+# calificarse: el unico mercado F5 medido era quien iba ganando. Mostrar una
+# probabilidad que nunca se contrasta es exactamente lo que este archivo existe
+# para evitar.
+LINEAS_F5 = [2.5, 3.5, 4.5, 5.5, 6.5]
 # La casa dando (m) o recibiendo (p) carreras, con el margen minimo que cubre.
 # Se escriben los umbrales en vez de derivarlos del signo: dando 2.5 hay que
 # ganar por 3, recibiendo 2.5 basta con no perder por mas de 2, y equivocar ese
@@ -187,6 +192,10 @@ def recolectar():
 
         if real["f5v"] is not None:
             anotar("first_five", "p_casa_f5", real["f5c"] > real["f5v"])
+            total_f5 = real["f5v"] + real["f5c"]
+            for linea in LINEAS_F5:
+                anotar(f"total_f5_over_{_sufijo(linea)}",
+                       f"p_over{_sufijo(linea)}_f5", total_f5 > linea)
         if real["inn1"] is not None:
             anotar("nrfi", "p_nrfi", real["inn1"] == 0)
 

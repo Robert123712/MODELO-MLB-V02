@@ -33,7 +33,7 @@ LIGA_FIP = 4.15
 HFA = 1.045
 N_SIMS = 50_000
 LINEAS = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
-LINEAS_F5 = [3.5, 4.5, 5.5]          # totales de las primeras 5 entradas
+LINEAS_F5 = [2.5, 3.5, 4.5, 5.5, 6.5]  # totales de las primeras 5 entradas
 TEMPORADA = 2026
 INICIO_TEMP = "03/25/2026"
 
@@ -1417,6 +1417,11 @@ COLUMNAS_HISTORICO = [
     # Totales por equipo.
     "tt_visita_25", "tt_visita_35", "tt_visita_45", "tt_visita_55",
     "tt_casa_25", "tt_casa_35", "tt_casa_45", "tt_casa_55",
+    # Totales de las primeras cinco. `p_over45_f5` ya existia arriba y se queda
+    # donde estaba: mover una columna vieja reescribiria el orden del historico.
+    # Las demas lineas se publicaban en pantalla sin registrarse, que es el
+    # mismo hueco que ya se cerro para el juego completo.
+    "p_over25_f5", "p_over35_f5", "p_over55_f5", "p_over65_f5",
 ]
 
 
@@ -1448,6 +1453,8 @@ def fila_historica(fecha, juego, r):
     for lado, mercado in (("visita", r["tt_visita"]), ("casa", r["tt_casa"])):
         for linea in LINEAS_TT:
             valores[f"tt_{lado}_{str(linea).replace('.', '')}"] = p3(mercado[linea])
+    for linea in LINEAS_F5:
+        valores[f"p_over{str(linea).replace('.', '')}_f5"] = p3(f5["overs"][linea])
     faltan = set(COLUMNAS_HISTORICO) - set(valores)
     if faltan:
         raise ValueError(f"Faltan columnas del historico: {sorted(faltan)}")
