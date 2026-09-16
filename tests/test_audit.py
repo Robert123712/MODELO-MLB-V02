@@ -153,7 +153,7 @@ class HistoricalRow(unittest.TestCase):
 
     def fila(self):
         sim = m.simular_completo(4.2, 5.1)
-        f5_overs, p_casa5, p_visita5, p_empate5 = m.simular_f5(2.1, 2.4)
+        f5_overs, p_casa5, p_visita5, p_empate5, rl_c5, rl_v5 = m.simular_f5(2.1, 2.4)
         r = {
             "visita": "Tigers", "casa": "Blue Jays",
             "abridor_v": "A", "abridor_c": "B",
@@ -164,7 +164,8 @@ class HistoricalRow(unittest.TestCase):
             "p_casa_rl": sim["p_casa_rl"],
             "f5": {"total_esp": 4.5, "p_casa": p_casa5, "p_visita": p_visita5,
                    "p_empate": p_empate5, "overs": f5_overs,
-                   "rl_casa": p_casa5 + p_empate5, "rl_visita": p_visita5 + p_empate5},
+                   "rl_casa": rl_c5["+0.5"], "rl_visita": rl_v5["+0.5"],
+                   "rl_casa_lineas": rl_c5, "rl_visita_lineas": rl_v5},
             "nrfi": {"nrfi": 0.52, "yrfi": 0.48},
             "generado_en": "2026-09-16T00:00:00Z",
         }
@@ -313,7 +314,7 @@ class Simulation(unittest.TestCase):
         self.assertTrue(all(0<=p<=1 for p in full['overs'].values()))
         values=list(full['overs'].values())
         self.assertEqual(values,sorted(values,reverse=True))
-        _,home,away,draw=m.simular_f5(2,3)
+        _,home,away,draw,_rc,_rv=m.simular_f5(2,3)
         self.assertAlmostEqual(home+away+draw,1)
 
 
@@ -719,6 +720,60 @@ class JuegoEmpezado(unittest.TestCase):
     def test_a_finished_game_is_not_simulated(self):
         # Final no esta en ninguna: ya hay marcador real, proyectarlo no aporta.
         self.assertNotIn("Final", m.ANTES_DEL_PRIMER_PITCHEO + m.EN_JUEGO)
+
+
+class SpreadF5(unittest.TestCase):
+    """En cinco entradas el empate es resultado real, y media carrera lo separa."""
+
+    def setUp(self):
+        _, self.p_casa, self.p_visita, self.p_empate, self.casa, self.visita = m.simular_f5(2.1, 2.4)
+
+    def test_every_line_for_both_teams(self):
+        esperadas = {"-1.5", "-0.5", "+0.5", "+1.5"}
+        self.assertEqual(set(self.casa), esperadas)
+        self.assertEqual(set(self.visita), esperadas)
+
+    def test_receiving_half_a_run_is_covered_by_the_tie(self):
+        # Es la diferencia con el juego completo: ahi "no perder" y "ganar" son
+        # lo mismo, aqui no. Recibiendo 0.5 el empate cubre.
+        self.assertAlmostEqual(self.casa["+0.5"], self.p_casa + self.p_empate, places=6)
+        self.assertAlmostEqual(self.visita["+0.5"], self.p_visita + self.p_empate, places=6)
+
+    def test_giving_half_a_run_needs_the_lead(self):
+        self.assertAlmostEqual(self.casa["-0.5"], self.p_casa, places=6)
+        self.assertAlmostEqual(self.visita["-0.5"], self.p_visita, places=6)
+
+    def test_opposite_sides_are_exact_complements(self):
+        # Media carrera no deja push ni con empate: el empate cae del lado que
+        # recibe. Si no sumaran 1, alguna linea estaria contando de mas.
+        for linea in ("0.5", "1.5"):
+            self.assertAlmostEqual(self.casa[f"-{linea}"] + self.visita[f"+{linea}"], 1, places=6)
+            self.assertAlmostEqual(self.casa[f"+{linea}"] + self.visita[f"-{linea}"], 1, places=6)
+
+    def test_giving_runs_is_never_easier_than_receiving_them(self):
+        for mercado in (self.casa, self.visita):
+            self.assertLessEqual(mercado["-1.5"], mercado["-0.5"])
+            self.assertLessEqual(mercado["-0.5"], mercado["+0.5"])
+            self.assertLessEqual(mercado["+0.5"], mercado["+1.5"])
+
+    def test_the_published_scalar_is_still_the_plus_half(self):
+        # `rl_casa_f5` lleva meses en el historico significando +0.5. Si el mapa
+        # lo cambiara, las filas viejas y las nuevas mediran cosas distintas.
+        self.assertAlmostEqual(self.casa["+0.5"], self.p_casa + self.p_empate, places=6)
+
+    def test_every_published_f5_spread_is_recorded_and_graded(self):
+        import metricas_edgebook
+        for etiqueta, _ in metricas_edgebook.RUN_LINE_F5:
+            self.assertIn(f"rl_casa_f5_{etiqueta}", m.COLUMNAS_HISTORICO)
+
+    def test_the_grading_thresholds_match_what_the_line_means(self):
+        import metricas_edgebook
+        umbrales = dict(metricas_edgebook.RUN_LINE_F5)
+        # Dando 0.5 hay que ir arriba por una; recibiendo 0.5 el empate (0) cubre.
+        self.assertEqual(umbrales["m05"], 1)
+        self.assertEqual(umbrales["p05"], 0)
+        self.assertEqual(umbrales["m15"], 2)
+        self.assertEqual(umbrales["p15"], -1)
 
 
 class TotalesF5(unittest.TestCase):

@@ -115,6 +115,11 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
             "p_casa": _r(f5["p_casa"], 4), "p_visita": _r(f5["p_visita"], 4),
             "p_empate": _r(f5["p_empate"], 4),
             "rl_casa": _r(f5["rl_casa"], 4), "rl_visita": _r(f5["rl_visita"], 4),
+            # Spread completo por equipo. Los escalares de arriba son el +0.5 y
+            # se conservan: una emision anterior sin estos mapas debe seguir
+            # leyendose sin que la pantalla se rompa.
+            "rl_casa_lineas": {k: round(v, 4) for k, v in f5["rl_casa_lineas"].items()},
+            "rl_visita_lineas": {k: round(v, 4) for k, v in f5["rl_visita_lineas"].items()},
             "overs": {str(k): round(val, 4) for k, val in f5["overs"].items()},
         },
         "jugadas_valor": [

@@ -52,6 +52,10 @@ LINEAS_TT = [2.5, 3.5, 4.5, 5.5]
 # probabilidad que nunca se contrasta es exactamente lo que este archivo existe
 # para evitar.
 LINEAS_F5 = [2.5, 3.5, 4.5, 5.5, 6.5]
+# Spread de F5, con el margen minimo que cubre cada linea. Se escriben los
+# umbrales igual que en el juego completo: dando 0.5 hay que ir arriba (margen
+# 1), recibiendo 0.5 basta con no ir abajo (margen 0, el empate cubre).
+RUN_LINE_F5 = [("m05", 1), ("m15", 2), ("p05", 0), ("p15", -1)]
 # La casa dando (m) o recibiendo (p) carreras, con el margen minimo que cubre.
 # Se escriben los umbrales en vez de derivarlos del signo: dando 2.5 hay que
 # ganar por 3, recibiendo 2.5 basta con no perder por mas de 2, y equivocar ese
@@ -231,6 +235,10 @@ def recolectar():
             for linea in LINEAS_F5:
                 anotar(f"total_f5_over_{_sufijo(linea)}",
                        f"p_over{_sufijo(linea)}_f5", total_f5 > linea)
+            margen_f5 = real["f5c"] - real["f5v"]
+            for columna, minimo in RUN_LINE_F5:
+                anotar(f"run_line_f5_casa_{columna}", f"rl_casa_f5_{columna}",
+                       margen_f5 >= minimo)
         if real["inn1"] is not None:
             anotar("nrfi", "p_nrfi", real["inn1"] == 0)
 

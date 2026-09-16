@@ -34,6 +34,9 @@ HFA = 1.045
 N_SIMS = 50_000
 LINEAS = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
 LINEAS_F5 = [2.5, 3.5, 4.5, 5.5, 6.5]  # totales de las primeras 5 entradas
+# Spread de las primeras cinco. Media carrera basta para separar el empate, que
+# en F5 existe: dando 0.5 hay que ir arriba, recibiendo 0.5 el empate cubre.
+LINEAS_RL_F5 = [0.5, 1.5]
 # Estados de statsapi. La separacion importa: los de la primera lista pueden
 # entrar al historico porque la prediccion es previa al primer pitcheo; los de la
 # segunda se muestran pero nunca se registran.
@@ -1262,12 +1265,28 @@ def simular(lam_v, lam_c):
 
 def simular_f5(lam_v, lam_c):
     """#F5: tras 5 entradas el EMPATE si es un resultado real (no hay desempate).
-    Devuelve (overs_f5, p_casa, p_visita, p_empate) -> ML a 3 vias."""
+
+    Devuelve (overs, p_casa, p_visita, p_empate, rl_casa, rl_visita). Las dos
+    ultimas son el spread completo por equipo, con la linea firmada como clave.
+
+    El empate es justo lo que hace interesante el +0.5 aqui: en el juego
+    completo "no perder" y "ganar" son lo mismo, en cinco entradas no. Dando 0.5
+    hay que ir arriba; recibiendo 0.5 basta con no ir abajo, y el empate cubre.
+    """
     c_v = simular_binom_neg(lam_v, N_SIMS, DISPERSION_K_F5)
     c_c = simular_binom_neg(lam_c, N_SIMS, DISPERSION_K_F5)
     tot = c_v + c_c
     overs = {ln: (tot > ln).mean() for ln in LINEAS_F5}
-    return overs, (c_c > c_v).mean(), (c_v > c_c).mean(), (c_c == c_v).mean()
+    margen = c_c - c_v
+    rl_c, rl_v = {}, {}
+    for ln in LINEAS_RL_F5:
+        # Dando `ln` hay que ganar por mas: -0.5 pide margen 1, -1.5 pide 2.
+        rl_c[_etiqueta_rl(-ln)] = (margen >= math.ceil(ln)).mean()
+        # Recibiendo `ln`: +0.5 admite el empate, +1.5 admite perder por una.
+        rl_c[_etiqueta_rl(ln)] = (margen >= -math.floor(ln)).mean()
+        rl_v[_etiqueta_rl(-ln)] = (-margen >= math.ceil(ln)).mean()
+        rl_v[_etiqueta_rl(ln)] = (-margen >= -math.floor(ln)).mean()
+    return overs, (c_c > c_v).mean(), (c_v > c_c).mean(), (c_c == c_v).mean(), rl_c, rl_v
 
 def predecir_hits_juego(visita, casa, game_id, pitcher_v, pitcher_c, park_factor, split_v, split_c):
     """Obtiene predicciones de hits para todos los bateadores en la alineacion de un juego.
@@ -1407,7 +1426,8 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
     pitcheo_v_f5 = fip_f5(fip_v, ip_v, bp_v["fip"])
     lam_v_f5 = rg_v * split_v * lu_v * frac_f5 * multiplicador_pitcheo(pitcheo_c_f5) * def_c * ambiente * AJUSTE_BASE * AJUSTE_F5 / HFA
     lam_c_f5 = rg_c * split_c * lu_c * frac_f5 * multiplicador_pitcheo(pitcheo_v_f5) * def_v * ambiente * AJUSTE_BASE * AJUSTE_F5 * HFA
-    overs_f5, p_casa_f5, p_visita_f5, p_empate_f5 = simular_f5(lam_v_f5, lam_c_f5)
+    (overs_f5, p_casa_f5, p_visita_f5, p_empate_f5,
+     rl_casa_f5, rl_visita_f5) = simular_f5(lam_v_f5, lam_c_f5)
 
     # NRFI/YRFI: 1ra entrada, solo el abridor (el bullpen no participa)
     # En la 1a entrada el abridor esta en su MEJOR vuelta al orden
@@ -1447,7 +1467,10 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
             "lam_v": lam_v_f5, "lam_c": lam_c_f5, "total_esp": lam_v_f5 + lam_c_f5,
             "overs": overs_f5, "p_casa": p_casa_f5, "p_visita": p_visita_f5,
             "p_empate": p_empate_f5,
-            "rl_casa": p_casa_f5 + p_empate_f5, "rl_visita": p_visita_f5 + p_empate_f5,
+            # Los escalares se conservan y ahora se leen del mapa: son
+            # exactamente el +0.5 de cada lado, que es lo que siempre fueron.
+            "rl_casa": rl_casa_f5["+0.5"], "rl_visita": rl_visita_f5["+0.5"],
+            "rl_casa_lineas": rl_casa_f5, "rl_visita_lineas": rl_visita_f5,
         },
         "nrfi": prob_nrfi(l1_v, l1_c),
         # banderas de calidad: que tanto confiar en esta prediccion
@@ -1507,6 +1530,10 @@ COLUMNAS_HISTORICO = [
     # Las demas lineas se publicaban en pantalla sin registrarse, que es el
     # mismo hueco que ya se cerro para el juego completo.
     "p_over25_f5", "p_over35_f5", "p_over55_f5", "p_over65_f5",
+    # Spread de F5. Solo el lado de la casa: en lineas de media carrera el
+    # empate cae del lado que recibe, asi que la visita es el complemento
+    # exacto y guardarla seria repetir el mismo evento.
+    "rl_casa_f5_m05", "rl_casa_f5_m15", "rl_casa_f5_p05", "rl_casa_f5_p15",
 ]
 
 
@@ -1540,6 +1567,8 @@ def fila_historica(fecha, juego, r):
             valores[f"tt_{lado}_{str(linea).replace('.', '')}"] = p3(mercado[linea])
     for linea in LINEAS_F5:
         valores[f"p_over{str(linea).replace('.', '')}_f5"] = p3(f5["overs"][linea])
+    for etiqueta, clave in (("m05", "-0.5"), ("m15", "-1.5"), ("p05", "+0.5"), ("p15", "+1.5")):
+        valores[f"rl_casa_f5_{etiqueta}"] = p3(f5["rl_casa_lineas"][clave])
     faltan = set(COLUMNAS_HISTORICO) - set(valores)
     if faltan:
         raise ValueError(f"Faltan columnas del historico: {sorted(faltan)}")
