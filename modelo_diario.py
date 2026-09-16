@@ -391,7 +391,7 @@ def anteriores_a(log_splits, corte):
 
     `corte` viene en mm/dd/YYYY, que es como el resto del programa maneja las
     fechas; el gameLog las trae en YYYY-MM-DD. Se comparan por partes y no como
-    texto: con el año al final, "12/30/2026" seria mayor que "01/02/2027".
+    texto: con el anio al final, "12/30/2026" seria mayor que "01/02/2027".
 
     El corte es ESTRICTO. Una apertura del mismo dia ya termino cuando se
     escribe en el log, asi que incluirla seria contarle al modelo el juego que
@@ -1163,6 +1163,24 @@ def factor_defensivo(nombre_equipo):
 # reciencia contra el promedio simple... pero carreras_por_juego YA es ese
 # promedio ponderado (misma VIDA_MEDIA): aplicaba el mismo momentum ~1.2 veces.
 
+def spread_de(margen, lineas):
+    """El spread de los dos equipos a partir del margen simulado.
+
+    La regla de cobertura vive AQUI y en ningun otro lado: dando `ln` hay que
+    ganar por `ceil(ln)`, recibiendola basta con no perder por mas de
+    `floor(ln)`. Estuvo escrita dos veces —juego completo y F5— y equivocar un
+    ceil por un floor califica el mercado contrario sin que nada falle a gritos,
+    que es justo el error que ya nos mordio una vez.
+    """
+    casa, visita = {}, {}
+    for ln in lineas:
+        casa[_etiqueta_rl(-ln)] = (margen >= math.ceil(ln)).mean()
+        casa[_etiqueta_rl(ln)] = (margen >= -math.floor(ln)).mean()
+        visita[_etiqueta_rl(-ln)] = (-margen >= math.ceil(ln)).mean()
+        visita[_etiqueta_rl(ln)] = (-margen >= -math.floor(ln)).mean()
+    return casa, visita
+
+
 def _etiqueta_rl(linea):
     """'-1.5' o '+1.5': el signo es parte del mercado, no adorno."""
     return f"{'+' if linea > 0 else '-'}{abs(linea):g}"
@@ -1227,10 +1245,7 @@ def simular_completo(lam_v, lam_c):
     # Lo que si queda fuera es la extra que termina por dos o mas carreras,
     # poco frecuente y sin modelo propio aqui.
     margen = c_c - c_v
-    rl_c = {_etiqueta_rl(-ln): (margen >= math.ceil(ln)).mean() for ln in LINEAS_RL}
-    rl_c.update({_etiqueta_rl(ln): (margen >= -math.floor(ln)).mean() for ln in LINEAS_RL})
-    rl_v = {_etiqueta_rl(-ln): (-margen >= math.ceil(ln)).mean() for ln in LINEAS_RL}
-    rl_v.update({_etiqueta_rl(ln): (-margen >= -math.floor(ln)).mean() for ln in LINEAS_RL})
+    rl_c, rl_v = spread_de(margen, LINEAS_RL)
 
     # marcadores mas probables (codifica el par casa-visita en un entero)
     codigo = c_c * 1000 + c_v
@@ -1277,15 +1292,9 @@ def simular_f5(lam_v, lam_c):
     c_c = simular_binom_neg(lam_c, N_SIMS, DISPERSION_K_F5)
     tot = c_v + c_c
     overs = {ln: (tot > ln).mean() for ln in LINEAS_F5}
-    margen = c_c - c_v
-    rl_c, rl_v = {}, {}
-    for ln in LINEAS_RL_F5:
-        # Dando `ln` hay que ganar por mas: -0.5 pide margen 1, -1.5 pide 2.
-        rl_c[_etiqueta_rl(-ln)] = (margen >= math.ceil(ln)).mean()
-        # Recibiendo `ln`: +0.5 admite el empate, +1.5 admite perder por una.
-        rl_c[_etiqueta_rl(ln)] = (margen >= -math.floor(ln)).mean()
-        rl_v[_etiqueta_rl(-ln)] = (-margen >= math.ceil(ln)).mean()
-        rl_v[_etiqueta_rl(ln)] = (-margen >= -math.floor(ln)).mean()
+    # Misma regla que el juego completo. Lo unico propio de F5 es que aqui el
+    # empate existe, y por eso media carrera ya separa los lados.
+    rl_c, rl_v = spread_de(c_c - c_v, LINEAS_RL_F5)
     return overs, (c_c > c_v).mean(), (c_v > c_c).mean(), (c_c == c_v).mean(), rl_c, rl_v
 
 def predecir_hits_juego(visita, casa, game_id, pitcher_v, pitcher_c, park_factor, split_v, split_c):
@@ -1354,7 +1363,7 @@ def predecir_hits_juego(visita, casa, game_id, pitcher_v, pitcher_c, park_factor
 # Cualquier cambio de modelo habia que replicarlo 6 veces y ya provoco un bug de
 # variables cruzadas. Ahora todos los consumidores llaman aqui.
 
-def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
+def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False, corte=None):
     """Evalua un juego completo del schedule y devuelve TODO lo que el modelo sabe.
 
     Devuelve un dict con inputs (abridores, bullpens, ofensivas), lambdas,
@@ -1376,8 +1385,14 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False):
     if frac_f5 is None:
         frac_f5 = f5_frac_liga(hoy)
 
-    pv = datos_pitcher(nombre_v) or {}
-    pc = datos_pitcher(nombre_c) or {}
+    # `corte` viaja hasta el abridor, que es la unica fuente que hoy sabe
+    # reconstruirse a una fecha. El bullpen y la ofensiva todavia leen el estado
+    # de hoy, asi que nadie lo pasa en produccion: el camino existe y esta
+    # probado, pero `con_fuga` sigue bloqueando la corrida pasada hasta que las
+    # otras fuentes tambien lo honren. Sin el parametro aqui, esa conexion nunca
+    # llegaria a hacerse.
+    pv = datos_pitcher(nombre_v, corte) or {}
+    pc = datos_pitcher(nombre_c, corte) or {}
 
     # Nivel de reemplazo: un abridor sin stats de la temporada (regresa de lesion,
     # debuta, lo suben de ligas menores) ya no tumba el juego entero. Se le asigna
@@ -1533,7 +1548,12 @@ COLUMNAS_HISTORICO = [
     # Spread de F5. Solo el lado de la casa: en lineas de media carrera el
     # empate cae del lado que recibe, asi que la visita es el complemento
     # exacto y guardarla seria repetir el mismo evento.
-    "rl_casa_f5_m05", "rl_casa_f5_m15", "rl_casa_f5_p05", "rl_casa_f5_p15",
+    #
+    # Y solo las lineas de 1.5. Media carrera ya esta en el historico bajo otro
+    # nombre: `p_casa_f5` ES casa -0.5 (ir arriba) y `rl_casa_f5` ES casa +0.5
+    # (no ir abajo). Agregarlas otra vez guardaria dos columnas con el mismo
+    # numero y las calificaria como si fueran mercados distintos.
+    "rl_casa_f5_m15", "rl_casa_f5_p15",
 ]
 
 
@@ -1567,7 +1587,7 @@ def fila_historica(fecha, juego, r):
             valores[f"tt_{lado}_{str(linea).replace('.', '')}"] = p3(mercado[linea])
     for linea in LINEAS_F5:
         valores[f"p_over{str(linea).replace('.', '')}_f5"] = p3(f5["overs"][linea])
-    for etiqueta, clave in (("m05", "-0.5"), ("m15", "-1.5"), ("p05", "+0.5"), ("p15", "+1.5")):
+    for etiqueta, clave in (("m15", "-1.5"), ("p15", "+1.5")):
         valores[f"rl_casa_f5_{etiqueta}"] = p3(f5["rl_casa_lineas"][clave])
     faltan = set(COLUMNAS_HISTORICO) - set(valores)
     if faltan:

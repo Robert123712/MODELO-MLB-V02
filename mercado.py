@@ -86,20 +86,21 @@ def cierre(indice, visita, casa, comienza):
     return min(del_juego, key=lambda f: _numero(f.get("minutos_antes")) or 1e9)
 
 
-def probabilidad_implicita(momio):
-    momio = float(momio)
-    return -momio / (-momio + 100) if momio < 0 else 100 / (momio + 100)
-
-
 def sin_vig(momio_visita, momio_casa):
     """Probabilidad de la casa con el margen repartido entre los dos lados.
 
     Sin quitarlo, las dos probabilidades suman mas de 1 y el mercado pareceria
     peor calibrado de lo que esta, que es una comparacion tramposa a su favor.
+
+    La conversion y el de-vig salen de `valor`, que es donde ya vivian para la
+    deteccion de valor. Tener dos formulas de de-vig en el repo pondria al
+    modelo y a la referencia contra la que se mide en matematicas distintas, y
+    la diferencia apareceria como si fuera merito o culpa del modelo.
     """
     v, c = _numero(momio_visita), _numero(momio_casa)
     if v is None or c is None:
         return None
-    p_casa, p_visita = probabilidad_implicita(c), probabilidad_implicita(v)
-    suma = p_casa + p_visita
-    return p_casa / suma if suma > 0 else None
+    p_casa = valor.decimal_a_prob(valor.americano_a_decimal(c))
+    p_visita = valor.decimal_a_prob(valor.americano_a_decimal(v))
+    sin_margen, _ = valor.devig_dos_vias(p_casa, p_visita)
+    return sin_margen if (p_casa + p_visita) > 0 else None

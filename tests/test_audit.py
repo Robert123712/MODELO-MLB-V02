@@ -722,6 +722,43 @@ class JuegoEmpezado(unittest.TestCase):
         self.assertNotIn("Final", m.ANTES_DEL_PRIMER_PITCHEO + m.EN_JUEGO)
 
 
+class EsquemaDeMercados(unittest.TestCase):
+    """Lo que se califica y lo que se escribe tienen que ser el mismo conjunto.
+
+    Hasta hoy cada familia traia su propia prueba a mano, y por eso los totales
+    de F5 vivieron semanas publicados sin calificarse: nadie habia escrito LA
+    prueba de esa familia. Estas dos cubren todas las familias de una vez.
+    """
+
+    def test_no_market_reads_a_column_that_is_never_written(self):
+        import metricas_edgebook
+        # No basta con que no truene: tiene que decir cual falta.
+        metricas_edgebook.verificar_declaradas(m.COLUMNAS_HISTORICO)
+        with self.assertRaises(ValueError) as caso:
+            metricas_edgebook.verificar_declaradas(["fecha", "visita", "casa"])
+        self.assertIn("p_casa", str(caso.exception))
+
+    def test_every_probability_column_written_is_also_graded(self):
+        """La direccion contraria: publicar sin medir.
+
+        Una columna de probabilidad que el historico guarda y nadie califica es
+        exactamente el hueco que costo esta sesion: la pantalla la ensena y el
+        record no la contrasta.
+        """
+        import metricas_edgebook
+        calificadas = metricas_edgebook.columnas_declaradas()
+        # Las de contexto no son mercados: no hay nada que acertar en ellas.
+        contexto = {"fecha", "visita", "casa", "abridor_v", "abridor_c", "lam_v",
+                    "lam_c", "total_esp", "total_f5", "game_id", "generado_en",
+                    "game_datetime", "model_version", "p_casa_calibrada",
+                    "p_empate_f5", "p_visita_f5", "rl_visita_f5"}
+        publicadas = {c for c in m.COLUMNAS_HISTORICO
+                      if c.startswith(("p_", "rl_", "tt_")) and c not in contexto}
+        sin_calificar = publicadas - calificadas
+        self.assertEqual(sin_calificar, set(),
+                         f"columnas publicadas que nadie califica: {sorted(sin_calificar)}")
+
+
 class SpreadF5(unittest.TestCase):
     """En cinco entradas el empate es resultado real, y media carrera lo separa."""
 
@@ -762,18 +799,44 @@ class SpreadF5(unittest.TestCase):
         self.assertAlmostEqual(self.casa["+0.5"], self.p_casa + self.p_empate, places=6)
 
     def test_every_published_f5_spread_is_recorded_and_graded(self):
+        """Se recorre lo que PUBLICA el simulador, no la lista del calificador.
+
+        La version anterior de esta prueba iteraba `RUN_LINE_F5`, o sea la lista
+        del calificador contra si misma: agregar una linea a `LINEAS_RL_F5` y
+        olvidarla en las otras dos la dejaba pasar en verde. La fuente de verdad
+        es lo que sale publicado.
+        """
         import metricas_edgebook
-        for etiqueta, _ in metricas_edgebook.RUN_LINE_F5:
-            self.assertIn(f"rl_casa_f5_{etiqueta}", m.COLUMNAS_HISTORICO)
+        _, _, _, _, rl_casa, _ = m.simular_f5(2.1, 2.4)
+        calificadas = {columna for _, columna, _ in metricas_edgebook.RUN_LINE_F5}
+        # `p_casa_f5` cubre casa -0.5: ir arriba en la quinta es `first_five`.
+        calificadas.add("p_casa_f5")
+        equivalente = {"-0.5": "p_casa_f5", "+0.5": "rl_casa_f5",
+                       "-1.5": "rl_casa_f5_m15", "+1.5": "rl_casa_f5_p15"}
+        for linea in rl_casa:
+            columna = equivalente.get(linea)
+            self.assertIsNotNone(columna, f"la linea {linea} no tiene columna")
+            self.assertIn(columna, m.COLUMNAS_HISTORICO, linea)
+            self.assertIn(columna, calificadas, f"{linea} se publica sin calificarse")
+
+    def test_half_a_run_is_not_graded_twice(self):
+        # casa -0.5 ES `first_five` y casa +0.5 ES `rl_casa_f5`. Calificarlas
+        # aparte contaria el mismo evento dos veces e inflaria la cuenta de
+        # mercados medidos sin medir uno solo mas.
+        import metricas_edgebook
+        mercados = [mercado for mercado, _, _ in metricas_edgebook.RUN_LINE_F5]
+        self.assertNotIn("run_line_f5_casa_m05", mercados)
+        self.assertEqual(sorted(set(mercados)), sorted(mercados))
+        columnas = [columna for _, columna, _ in metricas_edgebook.RUN_LINE_F5]
+        self.assertEqual(sorted(set(columnas)), sorted(columnas))
 
     def test_the_grading_thresholds_match_what_the_line_means(self):
         import metricas_edgebook
-        umbrales = dict(metricas_edgebook.RUN_LINE_F5)
-        # Dando 0.5 hay que ir arriba por una; recibiendo 0.5 el empate (0) cubre.
-        self.assertEqual(umbrales["m05"], 1)
-        self.assertEqual(umbrales["p05"], 0)
-        self.assertEqual(umbrales["m15"], 2)
-        self.assertEqual(umbrales["p15"], -1)
+        umbrales = {mercado: minimo for mercado, _, minimo in metricas_edgebook.RUN_LINE_F5}
+        # Recibiendo 0.5 el empate (margen 0) cubre; dando 1.5 hay que ganar por 2.
+        self.assertEqual(umbrales["run_line_f5_casa_p05"], 0)
+        self.assertEqual(umbrales["run_line_f5_casa_m15"], 2)
+        self.assertEqual(umbrales["run_line_f5_casa_p15"], -1)
 
 
 class TotalesF5(unittest.TestCase):

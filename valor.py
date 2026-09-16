@@ -26,12 +26,17 @@ _APODOS = [
     "Blue Jays", "Nationals",
 ]
 
+# La tabla en minusculas, una vez. `_canon` corre dos veces por prediccion y dos
+# por fila de precios, y minusculizaba los treinta apodos en cada llamada.
+_APODOS_MINUSCULA = [(apodo.lower(), apodo) for apodo in _APODOS]
+
+
 def _canon(nombre):
     """Reduce cualquier variante de nombre a su apodo canonico ('Oakland Athletics'
     y 'Athletics' -> 'Athletics'). Si no reconoce el equipo, usa el nombre limpio."""
     n = (nombre or "").lower()
-    for apodo in _APODOS:
-        if apodo.lower() in n:
+    for minuscula, apodo in _APODOS_MINUSCULA:
+        if minuscula in n:
             return apodo
     return n.strip()
 

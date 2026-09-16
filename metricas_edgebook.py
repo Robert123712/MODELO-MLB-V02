@@ -52,10 +52,18 @@ LINEAS_TT = [2.5, 3.5, 4.5, 5.5]
 # probabilidad que nunca se contrasta es exactamente lo que este archivo existe
 # para evitar.
 LINEAS_F5 = [2.5, 3.5, 4.5, 5.5, 6.5]
-# Spread de F5, con el margen minimo que cubre cada linea. Se escriben los
-# umbrales igual que en el juego completo: dando 0.5 hay que ir arriba (margen
-# 1), recibiendo 0.5 basta con no ir abajo (margen 0, el empate cubre).
-RUN_LINE_F5 = [("m05", 1), ("m15", 2), ("p05", 0), ("p15", -1)]
+# Spread de F5: (mercado, columna del historico, margen minimo que cubre).
+#
+# Media carrera no estrena columna porque ya estaba registrada con otro nombre:
+# `p_casa_f5` es casa -0.5 e ir arriba es lo mismo que ganar la primera mitad,
+# y `rl_casa_f5` es casa +0.5. Calificar casa -0.5 aparte seria contar el mismo
+# evento dos veces —es exactamente `first_five`— e inflar la cuenta de mercados
+# medidos sin medir uno solo mas.
+RUN_LINE_F5 = [
+    ("run_line_f5_casa_p05", "rl_casa_f5", 0),
+    ("run_line_f5_casa_m15", "rl_casa_f5_m15", 2),
+    ("run_line_f5_casa_p15", "rl_casa_f5_p15", -1),
+]
 # La casa dando (m) o recibiendo (p) carreras, con el margen minimo que cubre.
 # Se escriben los umbrales en vez de derivarlos del signo: dando 2.5 hay que
 # ganar por 3, recibiendo 2.5 basta con no perder por mas de 2, y equivocar ese
@@ -68,6 +76,48 @@ RUN_LINE = [("m15", 2), ("m25", 3), ("p15", -1), ("p25", -2)]
 def _sufijo(linea):
     """5.5 -> '55'. Es como se nombran las columnas del historico."""
     return str(linea).replace(".", "")
+
+
+# Cada mercado declarado una sola vez: (nombre, columna del historico, umbral).
+# Estaban rearmandose con f-strings dentro del bucle de predicciones, o sea unas
+# cuarenta veces por juego para producir siempre las mismas cadenas; y sobre
+# todo, la lista de lo que se califica no se podia comparar contra la lista de
+# lo que se escribe. Declararlas permite las dos cosas.
+TOTALES = [(f"total_over_{_sufijo(l)}", f"p_over{_sufijo(l)}", l) for l in LINEAS_TOTAL]
+TOTALES_F5 = [(f"total_f5_over_{_sufijo(l)}", f"p_over{_sufijo(l)}_f5", l) for l in LINEAS_F5]
+TOTALES_EQUIPO = [(f"team_total_{lado}_{_sufijo(l)}", f"tt_{lado}_{_sufijo(l)}", lado, l)
+                  for lado in ("visita", "casa") for l in LINEAS_TT]
+SPREAD = [(f"run_line_casa_{sufijo}", f"rl_casa_{sufijo}", minimo)
+          for sufijo, minimo in RUN_LINE]
+
+
+def columnas_declaradas():
+    """Toda columna del historico que algun mercado va a leer para calificar."""
+    columnas = {"p_casa", "p_casa_calibrada", "total_esp", "p_casa_f5", "p_nrfi"}
+    for tabla in (TOTALES, TOTALES_F5, SPREAD, RUN_LINE_F5):
+        columnas.update(fila[1] for fila in tabla)
+    columnas.update(fila[1] for fila in TOTALES_EQUIPO)
+    return columnas
+
+
+def verificar_declaradas(columnas_del_historico):
+    """Falla si el calificador lee una columna que el escritor nunca escribe.
+
+    `anotar` trata una columna ausente como "ese juego no tuvo el dato", que es
+    lo correcto para un partido sin entradas de F5 pero NO para una columna que
+    no existe. Esa confusion —ausencia de dato contra ausencia de esquema— es
+    la que dejo cinco lineas de F5 publicadas y sin calificar durante semanas,
+    sin que nada fallara.
+
+    Mundo cerrado para el esquema, mundo abierto para el dato.
+    """
+    faltan = columnas_declaradas() - set(columnas_del_historico)
+    if faltan:
+        raise ValueError(
+            "El calificador lee columnas que el historico no declara: "
+            f"{sorted(faltan)}. O se agregan a COLUMNAS_HISTORICO, o el mercado "
+            "que las usa sobra."
+        )
 
 
 def _mercado(pares, referencia):
@@ -154,6 +204,11 @@ def _error_total(fechados):
 
 
 def recolectar():
+    # Antes de leer una sola fila: que lo que se califica exista en el esquema
+    # que se escribe. Un desajuste aqui no produce un error, produce mercados
+    # que nadie mide, y eso no se nota mirando la salida.
+    import modelo_diario
+    verificar_declaradas(modelo_diario.COLUMNAS_HISTORICO)
     predicciones = validar.cargar_predicciones()
     fechas = sorted({p["fecha"] for p in predicciones}, key=validar._clave_fecha)
     cache = validar._cargar_cache()
@@ -200,16 +255,14 @@ def recolectar():
         # Cada linea se califica por separado y su muestra es el numero de
         # juegos. Juntarlas multiplicaria la n sin agregar informacion: las ocho
         # salen de la misma simulacion y se mueven juntas.
-        for linea in LINEAS_TOTAL:
-            anotar(f"total_over_{_sufijo(linea)}", f"p_over{_sufijo(linea)}",
-                   total_real > linea)
+        for nombre, columna, linea in TOTALES:
+            anotar(nombre, columna, total_real > linea)
         margen = real["rc"] - real["rv"]
-        for columna, minimo in RUN_LINE:
-            anotar(f"run_line_casa_{columna}", f"rl_casa_{columna}", margen >= minimo)
-        for lado, carreras in (("visita", real["rv"]), ("casa", real["rc"])):
-            for linea in LINEAS_TT:
-                anotar(f"team_total_{lado}_{_sufijo(linea)}",
-                       f"tt_{lado}_{_sufijo(linea)}", carreras > linea)
+        for nombre, columna, minimo in SPREAD:
+            anotar(nombre, columna, margen >= minimo)
+        carreras_de = {"visita": real["rv"], "casa": real["rc"]}
+        for nombre, columna, lado, linea in TOTALES_EQUIPO:
+            anotar(nombre, columna, carreras_de[lado] > linea)
 
         esperado = validar._f(p, "total_esp")
         if esperado is not None:
@@ -232,13 +285,13 @@ def recolectar():
         if real["f5v"] is not None:
             anotar("first_five", "p_casa_f5", real["f5c"] > real["f5v"])
             total_f5 = real["f5v"] + real["f5c"]
-            for linea in LINEAS_F5:
-                anotar(f"total_f5_over_{_sufijo(linea)}",
-                       f"p_over{_sufijo(linea)}_f5", total_f5 > linea)
+            for nombre, columna, linea in TOTALES_F5:
+                anotar(nombre, columna, total_f5 > linea)
+            # casa -0.5 no aparece aqui: es `first_five`, que ya se califico
+            # arriba con la misma columna y el mismo resultado.
             margen_f5 = real["f5c"] - real["f5v"]
-            for columna, minimo in RUN_LINE_F5:
-                anotar(f"run_line_f5_casa_{columna}", f"rl_casa_f5_{columna}",
-                       margen_f5 >= minimo)
+            for nombre, columna, minimo in RUN_LINE_F5:
+                anotar(nombre, columna, margen_f5 >= minimo)
         if real["inn1"] is not None:
             anotar("nrfi", "p_nrfi", real["inn1"] == 0)
 
