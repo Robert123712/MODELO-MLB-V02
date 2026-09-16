@@ -22,6 +22,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import mercado
 import validar
 
 try:
@@ -113,6 +114,21 @@ def _resumen_error(errores):
     }
 
 
+def _resumen_captura(minutos):
+    """Que tan pegada al primer pitcheo quedo la observacion que se llamo cierre.
+
+    Con cinco corridas al dia el hueco varia por juego. Publicarlo deja que la
+    pantalla diga la verdad —"la ultima lectura fue a 40 minutos"— en vez de
+    presentar cualquier foto del dia como si fuera la linea final.
+    """
+    if not minutos:
+        return None
+    ordenados = sorted(minutos)
+    return {"n": len(ordenados),
+            "mediana_minutos": round(ordenados[len(ordenados) // 2], 1),
+            "peor_minutos": round(ordenados[-1], 1)}
+
+
 def _error_total(fechados):
     """MAE y sesgo del marcador proyectado, con su desglose por mes.
 
@@ -144,8 +160,13 @@ def recolectar():
     # modelos que nunca existio.
     cubos = defaultdict(
         lambda: {"mercados": defaultdict(list), "totales": [],
+                 "cierre_total": [], "minutos_cierre": [],
                  "fechas": [], "sin_resultado": 0}
     )
+
+    # La linea de cierre entra SOLO para comparar: nunca alimenta al modelo.
+    # Si el modelo no le gana, no aporta nada que no estuviera ya en el precio.
+    precios = mercado.indexar(mercado.cargar())
 
     for p in predicciones:
         version = (p.get("model_version") or SIN_SELLO).strip()
@@ -190,6 +211,20 @@ def recolectar():
         if esperado is not None:
             c["totales"].append((p["fecha"], esperado - total_real))
 
+        cerro = mercado.cierre(precios, p["visita"], p["casa"], p.get("game_datetime"))
+        if cerro:
+            del_mercado = mercado.sin_vig(cerro.get("momio_visita"), cerro.get("momio_casa"))
+            if del_mercado is not None:
+                mercados["closing_moneyline"].append((del_mercado, gano_casa))
+            total_cierre = mercado._numero(cerro.get("total"))
+            if total_cierre is not None:
+                c["cierre_total"].append((p["fecha"], total_cierre - total_real))
+            minutos = mercado._numero(cerro.get("minutos_antes"))
+            if minutos is not None:
+                # Cuanto se parecia al cierre de verdad. Sin esto, una foto de
+                # hace seis horas se presentaria como si fuera la linea final.
+                c["minutos_cierre"].append(minutos)
+
         if real["f5v"] is not None:
             anotar("first_five", "p_casa_f5", real["f5c"] > real["f5v"])
             total_f5 = real["f5v"] + real["f5c"]
@@ -218,6 +253,10 @@ def recolectar():
                 "markets": {nombre: _mercado(pares, 0.25)
                             for nombre, pares in c["mercados"].items() if pares},
                 "projected_total": _error_total(c["totales"]),
+                # Mismo formato que publica NFL, para que la pantalla lea igual
+                # los dos deportes. `margin` no aplica en beisbol.
+                "closing_line": {"total": _error_total(c["cierre_total"]), "margin": None},
+                "closing_capture": _resumen_captura(c["minutos_cierre"]),
             }
         )
 

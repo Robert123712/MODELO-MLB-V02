@@ -89,12 +89,6 @@ jobs:
         continue-on-error: true
         run: python precios.py
 
-      # Intento retroactivo, que hasta hoy devuelve cero. Se queda mientras su
-      # diagnostico dice si ESPN publica momios de juegos ya jugados; si resulta
-      # que no, sobra y se va.
-      - name: Guardar la linea de cierre
-        continue-on-error: true
-        run: python cierres.py
 
       # Despues del snapshot: las metricas se calculan sobre el historico que
       # acaba de crecer. No bloquea la publicacion si falla — un fallo aqui deja
@@ -114,9 +108,8 @@ jobs:
           git config user.name "modelo-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add predicciones.csv docs/data/
-          # Ninguno de los dos existe hasta su primera captura con datos.
+          # No existe hasta su primera captura con datos.
           if [ -f precios.csv ]; then git add precios.csv; fi
-          if [ -f cierres.csv ]; then git add cierres.csv; fi
           if git diff --cached --quiet; then
             echo "Sin cambios que commitear."
             exit 0

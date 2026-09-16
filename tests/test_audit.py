@@ -4,8 +4,8 @@ from unittest.mock import patch
 import math
 import numpy as np
 import calibrar
-import cierres
 import metricas_edgebook
+import mercado
 import precios
 import generar_json
 import modelo_diario as m
@@ -40,109 +40,6 @@ class RunLine(unittest.TestCase):
 
     def test_classic_field_still_means_home_minus_1_5(self):
         self.assertEqual(self.sim["p_casa_rl"], self.sim["rl_casa"]["-1.5"])
-
-
-def _evento(visita, casa, odds):
-    return {"competitions": [{
-        "competitors": [
-            {"homeAway": "away", "team": {"displayName": visita}},
-            {"homeAway": "home", "team": {"displayName": casa}},
-        ],
-        "odds": [odds] if odds else [],
-    }]}
-
-
-CIERRE_ESPN = {
-    "provider": {"displayName": "ESPN BET"},
-    "overUnder": 8.5,
-    "spread": -1.5,
-    "moneyline": {"home": {"close": {"odds": -145}}, "away": {"close": {"odds": 125}}},
-    "pointSpread": {"home": {"close": {"line": -1.5}}},
-}
-
-
-class ClosingLine(unittest.TestCase):
-    """El precio de cierre solo existe si se guarda: pasado el juego nadie lo republica."""
-
-    def test_reads_the_closing_price_of_each_game(self):
-        payload = {"events": [_evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN)]}
-        mercado = cierres.leer_marcador(payload)
-        cierre = mercado[("Marlins", "Diamondbacks")]
-        self.assertEqual(cierre["momio_casa"], -145)
-        self.assertEqual(cierre["momio_visita"], 125)
-        self.assertEqual(cierre["total"], 8.5)
-        self.assertEqual(cierre["casa_de_apuestas"], "ESPN BET")
-
-    def test_falls_back_to_the_flat_price_when_close_is_missing(self):
-        odds = {"overUnder": 9.5, "homeTeamOdds": {"moneyLine": -110},
-                "awayTeamOdds": {"moneyLine": -105}}
-        cierre = cierres.leer_marcador({"events": [_evento("A Team", "B Team", odds)]})
-        valores = next(iter(cierre.values()))
-        self.assertEqual(valores["momio_casa"], -110)
-        self.assertEqual(valores["total"], 9.5)
-
-    def test_a_game_without_odds_is_skipped_not_invented(self):
-        self.assertEqual(cierres.leer_marcador({"events": [_evento("A Team", "B Team", None)]}), {})
-        vacio = {"provider": {"displayName": "x"}}
-        self.assertEqual(cierres.leer_marcador({"events": [_evento("A", "B", vacio)]}), {})
-
-    def test_counts_the_games_of_the_day_even_without_prices(self):
-        """Un dia cubierto sin momios no se ve igual que un dia sin cobertura.
-
-        Los dos terminan en cero cierres guardados, pero piden arreglos
-        opuestos: si ESPN no cubre la fecha no hay nada que hacer aqui, y si la
-        cubre sin precios significa que el cierre hay que pedirlo ANTES del
-        juego, porque despues el proveedor ya lo quito.
-        """
-        sin_precios = {"events": [_evento("A Team", "B Team", None),
-                                  _evento("C Team", "D Team", None)]}
-        self.assertEqual(cierres.juegos_del_dia(sin_precios), 2)
-        self.assertEqual(cierres.leer_marcador(sin_precios), {})
-        self.assertEqual(cierres.juegos_del_dia({"events": []}), 0)
-
-    def test_a_doubleheader_is_left_out(self):
-        payload = {"events": [_evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN),
-                              _evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN)]}
-        self.assertEqual(cierres.leer_marcador(payload), {})
-
-    def test_capture_matches_predictions_by_teams_and_date(self):
-        payload = {"events": [_evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN)]}
-        predicciones = [
-            {"fecha": "09/15/2026", "game_id": "1", "visita": "Miami Marlins",
-             "casa": "Arizona Diamondbacks"},
-            {"fecha": "09/14/2026", "game_id": "2", "visita": "Miami Marlins",
-             "casa": "Arizona Diamondbacks"},
-        ]
-        filas = cierres.capturar("09/15/2026", predicciones, lambda url: payload)
-        self.assertEqual(len(filas), 1)
-        self.assertEqual(filas[0]["game_id"], "1")
-        self.assertEqual(filas[0]["momio_casa"], -145)
-
-    def test_a_prediction_without_market_gets_no_price(self):
-        payload = {"events": [_evento("Otro Team", "Mas Otro", CIERRE_ESPN)]}
-        filas = cierres.capturar("09/15/2026", [
-            {"fecha": "09/15/2026", "game_id": "1", "visita": "Miami Marlins",
-             "casa": "Arizona Diamondbacks"}], lambda url: payload)
-        self.assertEqual(filas, [])
-
-    def test_pending_dates_exclude_today_and_what_is_already_saved(self):
-        predicciones = [
-            {"fecha": "09/12/2026", "game_id": "0"},
-            {"fecha": "09/14/2026", "game_id": "1"},
-            {"fecha": "09/15/2026", "game_id": "2"},
-            {"fecha": "09/16/2026", "game_id": "3"},
-        ]
-        guardados = [{"fecha": "09/14/2026", "game_id": "1"}]
-        # Hoy no, porque los juegos no han cerrado. La mas reciente primero:
-        # los juegos de ayer valen mas que rellenar julio.
-        self.assertEqual(
-            cierres.fechas_pendientes(predicciones, guardados, "09/16/2026"),
-            ["09/15/2026", "09/12/2026"])
-
-    def test_a_network_failure_returns_nothing_instead_of_raising(self):
-        def falla(url):
-            raise OSError("sin red")
-        self.assertEqual(cierres.capturar("09/15/2026", [], falla), [])
 
 
 class GradedMarkets(unittest.TestCase):
@@ -524,6 +421,58 @@ class Fits(unittest.TestCase):
             self.assertLessEqual(calibrar._logloss(calibrar._aplicar(pairs,a,b)),calibrar._logloss(pairs)+1e-9)
 
 
+class LineaDeCierre(unittest.TestCase):
+    """De varias observaciones del dia, una sola cuenta: la mas pegada al inicio."""
+
+    def _obs(self, minutos, momio_casa, total, comienza="2026-09-16T23:10:00+00:00"):
+        return {"visita": "Miami Marlins", "casa": "Arizona Diamondbacks",
+                "comienza": comienza, "minutos_antes": str(minutos),
+                "momio_visita": "125", "momio_casa": str(momio_casa), "total": str(total)}
+
+    def test_the_closing_line_is_the_last_one_before_first_pitch(self):
+        # Regla fija. Elegir despues cual observacion contar seria quedarse con
+        # la que mas conviene una vez conocido el resultado.
+        indice = mercado.indexar([self._obs(300, -130, 8.5), self._obs(45, -165, 9.0),
+                                  self._obs(180, -145, 8.5)])
+        cerro = mercado.cierre(indice, "Miami Marlins", "Arizona Diamondbacks",
+                               "2026-09-16T23:10:00Z")
+        self.assertEqual(cerro["momio_casa"], "-165")
+        self.assertEqual(cerro["minutos_antes"], "45")
+
+    def test_a_doubleheader_matches_each_game_by_its_own_start(self):
+        temprano = self._obs(30, -130, 8.5, comienza="2026-09-16T20:10:00+00:00")
+        tarde = self._obs(30, -190, 7.5, comienza="2026-09-17T00:10:00+00:00")
+        indice = mercado.indexar([temprano, tarde])
+        primero = mercado.cierre(indice, "Miami Marlins", "Arizona Diamondbacks",
+                                 "2026-09-16T20:10:00Z")
+        segundo = mercado.cierre(indice, "Miami Marlins", "Arizona Diamondbacks",
+                                 "2026-09-17T00:10:00Z")
+        self.assertEqual(primero["momio_casa"], "-130")
+        self.assertEqual(segundo["momio_casa"], "-190")
+
+    def test_a_game_too_far_in_time_is_not_matched(self):
+        # Un precio del juego equivocado es peor que ningun precio.
+        indice = mercado.indexar([self._obs(30, -130, 8.5)])
+        self.assertIsNone(mercado.cierre(indice, "Miami Marlins", "Arizona Diamondbacks",
+                                         "2026-09-20T23:10:00Z"))
+
+    def test_without_prices_there_is_no_closing_line(self):
+        self.assertIsNone(mercado.cierre({}, "Miami Marlins", "Arizona Diamondbacks",
+                                         "2026-09-16T23:10:00Z"))
+
+    def test_the_devigged_probability_adds_up_to_one(self):
+        # Sin quitar el margen las dos probabilidades suman mas de 1 y el
+        # mercado pareceria peor calibrado de lo que esta.
+        casa = mercado.sin_vig(123, -149)
+        visita = mercado.sin_vig(-149, 123)
+        self.assertAlmostEqual(casa + visita, 1.0, places=9)
+        self.assertGreater(casa, 0.5)
+
+    def test_a_missing_price_yields_no_probability(self):
+        self.assertIsNone(mercado.sin_vig(None, -149))
+        self.assertIsNone(mercado.sin_vig("", ""))
+
+
 class MoneylineDeESPN(unittest.TestCase):
     """El precio del ganador no vive donde el codigo lo buscaba primero."""
 
@@ -687,8 +636,8 @@ class PreciosObservados(unittest.TestCase):
         self.assertEqual(precios.observaciones(payload, AHORA), [])
 
     def test_a_doubleheader_keeps_both_games(self):
-        """cierres.py tenia que tirarlas: cruzaba por nombres y el par apuntaba a dos
-        juegos. Aqui cada juego trae su id y su hora, asi que se guardan los dos."""
+        """El intento retroactivo tenia que tirarlas: cruzaba por nombres y el par
+        apuntaba a dos juegos. Aqui cada uno trae su id y su hora, y se guardan los dos."""
         payload = {"events": [
             _juego_espn("Miami Marlins", "Arizona Diamondbacks", "2026-09-16T20:10Z",
                         PRECIO_VIVO, identificador="401a"),
