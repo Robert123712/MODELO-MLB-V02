@@ -41,6 +41,24 @@ SALIDA = "docs/data/edgebook-metrics.json"
 # presentarlos como si significaran algo.
 MINIMO_SIGNIFICATIVO = 100
 
+# Las lineas que el modelo publica y el historico registra. Cada una se califica
+# como su propio mercado: su muestra es el numero de juegos, no el numero de
+# llamadas.
+LINEAS_TOTAL = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
+LINEAS_TT = [2.5, 3.5, 4.5, 5.5]
+# La casa dando (m) o recibiendo (p) carreras, con el margen minimo que cubre.
+# Se escriben los umbrales en vez de derivarlos del signo: dando 2.5 hay que
+# ganar por 3, recibiendo 2.5 basta con no perder por mas de 2, y equivocar ese
+# signo califica el mercado contrario sin que nada falle a gritos.
+# La visita es el complemento exacto, asi que publicarla seria contar dos veces
+# el mismo evento.
+RUN_LINE = [("m15", 2), ("m25", 3), ("p15", -1), ("p25", -2)]
+
+
+def _sufijo(linea):
+    """5.5 -> '55'. Es como se nombran las columnas del historico."""
+    return str(linea).replace(".", "")
+
 
 def _mercado(pares, referencia):
     """Metricas de un mercado binario, o None si no hay con que calcularlas."""
@@ -97,7 +115,7 @@ def recolectar():
     # Un cubo por version del modelo. Mezclarlas seria describir un promedio de
     # modelos que nunca existio.
     cubos = defaultdict(
-        lambda: {"ml": [], "over85": [], "f5": [], "nrfi": [], "totales": [],
+        lambda: {"mercados": defaultdict(list), "totales": [],
                  "fechas": [], "sin_resultado": 0}
     )
 
@@ -111,28 +129,43 @@ def recolectar():
         c["fechas"].append(p["fecha"])
         gano_casa = 1 if real["rc"] > real["rv"] else 0
 
+        mercados = c["mercados"]
+
+        def anotar(nombre, columna, ocurrio):
+            """Una llamada del modelo contra lo que paso. Sin columna, no hubo llamada."""
+            probabilidad = validar._f(p, columna)
+            if probabilidad is not None:
+                mercados[nombre].append((probabilidad, 1 if ocurrio else 0))
+
         p_casa = validar._f(p, "p_casa_calibrada")
         if p_casa is None:
             p_casa = validar._f(p, "p_casa")
         if p_casa is not None:
-            c["ml"].append((p_casa, gano_casa))
+            mercados["moneyline"].append((p_casa, gano_casa))
 
         total_real = real["rv"] + real["rc"]
-        p85 = validar._f(p, "p_over85")
-        if p85 is not None:
-            c["over85"].append((p85, 1 if total_real > 8.5 else 0))
+        # Cada linea se califica por separado y su muestra es el numero de
+        # juegos. Juntarlas multiplicaria la n sin agregar informacion: las ocho
+        # salen de la misma simulacion y se mueven juntas.
+        for linea in LINEAS_TOTAL:
+            anotar(f"total_over_{_sufijo(linea)}", f"p_over{_sufijo(linea)}",
+                   total_real > linea)
+        margen = real["rc"] - real["rv"]
+        for columna, minimo in RUN_LINE:
+            anotar(f"run_line_casa_{columna}", f"rl_casa_{columna}", margen >= minimo)
+        for lado, carreras in (("visita", real["rv"]), ("casa", real["rc"])):
+            for linea in LINEAS_TT:
+                anotar(f"team_total_{lado}_{_sufijo(linea)}",
+                       f"tt_{lado}_{_sufijo(linea)}", carreras > linea)
+
         esperado = validar._f(p, "total_esp")
         if esperado is not None:
             c["totales"].append(esperado - total_real)
 
         if real["f5v"] is not None:
-            pc5 = validar._f(p, "p_casa_f5")
-            if pc5 is not None:
-                c["f5"].append((pc5, 1 if real["f5c"] > real["f5v"] else 0))
+            anotar("first_five", "p_casa_f5", real["f5c"] > real["f5v"])
         if real["inn1"] is not None:
-            p_nrfi = validar._f(p, "p_nrfi")
-            if p_nrfi is not None:
-                c["nrfi"].append((p_nrfi, 1 if real["inn1"] == 0 else 0))
+            anotar("nrfi", "p_nrfi", real["inn1"] == 0)
 
     versiones = []
     for version, c in cubos.items():
@@ -150,12 +183,8 @@ def recolectar():
                 # La pantalla no tiene que decidir el umbral por su cuenta.
                 "significant": version != SIN_SELLO
                 and calificadas >= MINIMO_SIGNIFICATIVO,
-                "markets": {
-                    "moneyline": _mercado(c["ml"], 0.25),
-                    "total_over_85": _mercado(c["over85"], 0.25),
-                    "first_five": _mercado(c["f5"], 0.25),
-                    "nrfi": _mercado(c["nrfi"], 0.25),
-                },
+                "markets": {nombre: _mercado(pares, 0.25)
+                            for nombre, pares in c["mercados"].items() if pares},
                 "projected_total": _error_total(c["totales"]),
             }
         )
@@ -180,7 +209,9 @@ def main():
 
     print(f"✅ {SALIDA}")
     for v in datos["versions"]:
-        ml = v["markets"]["moneyline"]
+        # Un mercado sin una sola llamada calificada no aparece en el dict: la
+        # ausencia dice "nunca se midio", que no es lo mismo que un cero.
+        ml = v["markets"].get("moneyline")
         marca = (
             "  (mezcla de versiones, no describe a ningun modelo)"
             if v["unlabeled"]

@@ -37,6 +37,87 @@ class RunLine(unittest.TestCase):
         self.assertEqual(self.sim["p_casa_rl"], self.sim["rl_casa"]["-1.5"])
 
 
+class GradedMarkets(unittest.TestCase):
+    """Cada linea publicada se califica sola, con su muestra igual a los juegos."""
+
+    def recolectar(self, predicciones, reales):
+        import metricas_edgebook as me
+        with patch.object(validar, "cargar_predicciones", return_value=predicciones), \
+             patch.object(validar, "preparar_resultados", return_value=reales), \
+             patch.object(validar, "_cargar_cache", return_value={}), \
+             patch.object(validar, "_guardar_cache", lambda c: None):
+            return me.recolectar()
+
+    def datos(self):
+        # Dos juegos: uno 7-2 (margen 5, total 9) y otro 1-3 (margen -2, total 4).
+        prediccion = {
+            "fecha": "09/16/2026", "visita": "A", "casa": "B", "model_version": "v1",
+            "p_casa": "0.6", "p_casa_calibrada": "0.6", "total_esp": "8.5",
+            "p_casa_f5": "0.55", "p_nrfi": "0.5",
+            "rl_casa_m15": "0.4", "rl_casa_m25": "0.3",
+            "rl_casa_p15": "0.7", "rl_casa_p25": "0.8",
+            "tt_casa_45": "0.45", "tt_visita_45": "0.35",
+        }
+        predicciones = [
+            {**prediccion, "game_id": "1"},
+            {**prediccion, "game_id": "2"},
+        ]
+        for linea in ("55", "65", "75", "85", "95", "105", "115", "125"):
+            for p in predicciones:
+                p[f"p_over{linea}"] = "0.5"
+        reales = {"09/16/2026": {
+            ("1",): {"rv": 2, "rc": 7, "f5v": 1, "f5c": 3, "inn1": 0},
+            ("2",): {"rv": 3, "rc": 1, "f5v": 2, "f5c": 0, "inn1": 2},
+        }}
+        return predicciones, reales
+
+    def test_every_recorded_line_becomes_its_own_market(self):
+        datos = self.recolectar(*self.datos())
+        mercados = datos["versions"][0]["markets"]
+        for esperado in ("moneyline", "total_over_55", "total_over_125",
+                         "run_line_casa_m15", "run_line_casa_p25",
+                         "team_total_casa_45", "team_total_visita_45",
+                         "first_five", "nrfi"):
+            self.assertIn(esperado, mercados, esperado)
+
+    def test_sample_is_the_number_of_games_not_of_calls(self):
+        datos = self.recolectar(*self.datos())
+        version = datos["versions"][0]
+        self.assertEqual(version["graded"], 2)
+        for nombre, m in version["markets"].items():
+            self.assertEqual(m["n"], 2, nombre)
+
+    def test_run_line_is_graded_against_the_real_margin(self):
+        datos = self.recolectar(*self.datos())
+        mercados = datos["versions"][0]["markets"]
+        # Margenes 5 y -2. El acierto compara el lado que el modelo favorecia
+        # contra lo que paso, no si el evento ocurrio.
+        # Dando 1.5 y 2.5 cubre solo el de margen 5, y el modelo se inclinaba a
+        # que no cubriria: acierta uno de dos.
+        self.assertEqual(mercados["run_line_casa_m15"]["hit_rate"], 0.5)
+        self.assertEqual(mercados["run_line_casa_m25"]["hit_rate"], 0.5)
+        # Recibiendo 1.5 cubre solo el de margen 5 y el modelo decia que si en
+        # los dos: acierta uno. Recibiendo 2.5 cubre en ambos, incluido el que
+        # perdio por exactamente 2: acierta los dos.
+        self.assertEqual(mercados["run_line_casa_p15"]["hit_rate"], 0.5)
+        self.assertEqual(mercados["run_line_casa_p25"]["hit_rate"], 1.0)
+
+    def test_team_totals_use_each_team_runs(self):
+        datos = self.recolectar(*self.datos())
+        mercados = datos["versions"][0]["markets"]
+        # Casa anoto 7 y 1: pasa de 4.5 una vez. Visita anoto 2 y 3: nunca.
+        self.assertEqual(mercados["team_total_casa_45"]["hit_rate"], 0.5)
+        self.assertEqual(mercados["team_total_visita_45"]["hit_rate"], 1.0)
+
+    def test_a_line_without_column_is_never_invented(self):
+        predicciones, reales = self.datos()
+        for p in predicciones:
+            del p["rl_casa_m15"]
+        mercados = self.recolectar(predicciones, reales)["versions"][0]["markets"]
+        self.assertNotIn("run_line_casa_m15", mercados)
+        self.assertIn("run_line_casa_m25", mercados)
+
+
 class HistoricalRow(unittest.TestCase):
     """Lo que la pantalla muestra tiene que quedar registrado para poder calificarse."""
 
