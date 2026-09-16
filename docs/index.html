@@ -227,34 +227,6 @@
       .mid { text-align: left; padding: 4px 0; }
     }
 
-    /* rendimiento reciente: compacto, visual y legible en celular */
-    .model-metrics {
-      margin: -8px 0 18px; padding: 13px 14px;
-      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    }
-    .model-metrics-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
-    .model-metrics-head > div { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
-    .model-metrics-kicker { color: var(--ink-3); font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
-    .model-metrics-head strong { color: var(--ink); font-size: 15px; white-space: nowrap; }
-    .metrics-sample { color: #e0a93e; background: rgba(224,169,62,.11); border: 1px solid rgba(224,169,62,.24); border-radius: 99px; padding: 3px 8px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
-    .metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-    .metric-mini { min-width: 0; padding: 9px 10px; background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 9px; }
-    .metric-mini-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
-    .metric-mini-label { color: var(--ink-2); font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .metric-mini-value { color: var(--ink); font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
-    .metric-track { height: 3px; margin-top: 7px; background: var(--border); border-radius: 99px; overflow: hidden; }
-    .metric-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
-    .metric-fill.good { background: var(--ev); }
-    .metric-fill.watch { background: #e0a93e; }
-    .metrics-updated { color: var(--ink-3); font-size: 10.5px; margin-top: 8px; text-align: right; }
-    @media (max-width: 640px) {
-      .model-metrics { margin-top: -6px; padding: 12px; }
-      .model-metrics-head > div { display: block; }
-      .model-metrics-kicker { display: block; margin-bottom: 1px; }
-      .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .metrics-updated { text-align: left; }
-    }
-
     /* panel del token (solo en la pagina publica) */
     .panel-token {
       width: 100%; margin-top: 12px; padding: 14px 16px;
@@ -326,18 +298,6 @@
       <p id="calibracion-info" class="calib hidden"></p>
     </div>
 
-    <section id="model-metrics" class="model-metrics hidden" aria-label="Rendimiento reciente del modelo" aria-live="polite">
-      <div class="model-metrics-head">
-        <div>
-          <span class="model-metrics-kicker">Rendimiento reciente</span>
-          <strong id="metrics-total">— resultados</strong>
-        </div>
-        <span id="metrics-sample" class="metrics-sample">Muestra inicial</span>
-      </div>
-      <div id="metrics-grid" class="metrics-grid"></div>
-      <p id="metrics-updated" class="metrics-updated"></p>
-    </section>
-
     <div id="skeleton" class="skeleton hidden">
       <div class="sk"></div><div class="sk"></div><div class="sk"></div>
     </div>
@@ -367,7 +327,6 @@ const emptyState = $('empty-state'), errorDiv = $('error');
 const slateSummary = $('slate-summary'), calibInfo = $('calibracion-info'), statusInd = $('status-indicator');
 const snapshotInfo = $('snapshot-info'), runEstado = $('run-estado');
 const btnRun = $('btn-run'), btnReload = $('btn-reload'), panelToken = $('panel-token');
-const modelMetrics = $('model-metrics'), metricsGrid = $('metrics-grid');
 
 /* ---------- configuración ---------- */
 const REPO = 'Robert123712/MODELO-MLB-V02';
@@ -375,7 +334,6 @@ const WORKFLOW = 'modelo-diario.yml';
 // raw.githubusercontent publica el commit al instante; la copia de Pages tarda
 // ~1 min más en desplegarse. Se intenta la fresca primero.
 const URL_RAW = `https://raw.githubusercontent.com/${REPO}/main/docs/data/latest.json`;
-const URL_METRICS_RAW = `https://raw.githubusercontent.com/${REPO}/main/docs/data/edgebook-metrics.json`;
 const URL_ACTIONS = `https://github.com/${REPO}/actions/workflows/${WORKFLOW}`;
 const CLAVE_TOKEN = 'mlb_modelo_token';
 
@@ -388,48 +346,6 @@ function setStatus(cls, txt) { statusInd.innerHTML = `<span class="dot ${cls}"><
 function estado(txt) {
   runEstado.textContent = txt || '';
   runEstado.classList.toggle('hidden', !txt);
-}
-
-function tiempoRelativo(iso) {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms)) return '';
-  const horas = Math.max(0, Math.round(ms / 3600000));
-  if (horas < 1) return 'Actualizado hace menos de 1 hora';
-  if (horas < 24) return `Actualizado hace ${horas} h`;
-  return `Actualizado hace ${Math.round(horas / 24)} d`;
-}
-
-async function cargarMetricas() {
-  const t = Date.now();
-  let data = null;
-  for (const url of [`${URL_METRICS_RAW}?t=${t}`, `data/edgebook-metrics.json?t=${t}`]) {
-    try {
-      const res = await fetch(url, { cache: 'no-store' });
-      if (res.ok) { data = await res.json(); break; }
-    } catch (e) { /* intenta la siguiente */ }
-  }
-  const version = data?.versions?.find(v => !v.unlabeled) ?? data?.versions?.[0];
-  if (!version?.markets) return;
-  const items = [
-    ['Moneyline', version.markets.moneyline],
-    ['Total over 8.5', version.markets.total_over_85],
-    ['Primeras 5', version.markets.first_five],
-    ['NRFI', version.markets.nrfi],
-  ].filter(([, market]) => market && Number.isFinite(market.hit_rate));
-  if (!items.length) return;
-
-  $('metrics-total').textContent = `${version.graded} resultados`;
-  $('metrics-sample').textContent = version.significant ? 'Muestra suficiente' : `Muestra inicial · meta ${data.minimum_meaningful}`;
-  metricsGrid.innerHTML = items.map(([label, market]) => {
-    const value = market.hit_rate * 100;
-    const tone = value >= 55 ? 'good' : value < 50 ? 'watch' : '';
-    return `<div class="metric-mini" title="${market.n} resultados calificados">
-      <div class="metric-mini-top"><span class="metric-mini-label">${label}</span><strong class="metric-mini-value">${value.toFixed(1)}%</strong></div>
-      <div class="metric-track" aria-hidden="true"><span class="metric-fill ${tone}" style="width:${Math.max(0, Math.min(100, value))}%"></span></div>
-    </div>`;
-  }).join('');
-  $('metrics-updated').textContent = tiempoRelativo(data.generated_at);
-  modelMetrics.classList.remove('hidden');
 }
 
 /* ---------- datos ---------- */
@@ -591,7 +507,6 @@ $('input-token').addEventListener('keydown', e => {
   if (e.key === 'Enter') $('btn-token-guardar').click();
 });
 
-cargarMetricas();
 cargar(false);
 
 /* ---------- helpers de formato ---------- */
