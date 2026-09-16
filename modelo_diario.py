@@ -34,6 +34,11 @@ HFA = 1.045
 N_SIMS = 50_000
 LINEAS = [5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5]
 LINEAS_F5 = [2.5, 3.5, 4.5, 5.5, 6.5]  # totales de las primeras 5 entradas
+# Estados de statsapi. La separacion importa: los de la primera lista pueden
+# entrar al historico porque la prediccion es previa al primer pitcheo; los de la
+# segunda se muestran pero nunca se registran.
+ANTES_DEL_PRIMER_PITCHEO = ("Scheduled", "Pre-Game", "Warmup")
+EN_JUEGO = ("In Progress", "Live", "Manager challenge", "Delayed", "Delayed Start")
 TEMPORADA = 2026
 INICIO_TEMP = "03/25/2026"
 
@@ -1465,7 +1470,11 @@ def correr(fecha=None):
     """Corre el modelo para una fecha (mm/dd/YYYY). Sin argumento usa hoy."""
     hoy = fecha or date.today().strftime("%m/%d/%Y")
     juegos = statsapi.schedule(date=hoy)
-    modelables = [j for j in juegos if j["status"] in ("Scheduled", "Pre-Game", "Warmup")
+    # Un juego que ya empezo no se borra de la pantalla. La proyeccion es
+    # matematica de antes del primer pitcheo —abridores, parque, clima— y no
+    # cambia porque el juego arranque: sigue siendo lo que el modelo dijo, que
+    # es justo lo que uno quiere ver mientras el partido corre.
+    modelables = [j for j in juegos if j["status"] in ANTES_DEL_PRIMER_PITCHEO + EN_JUEGO
                   and j["away_probable_pitcher"] and j["home_probable_pitcher"]]
 
 
@@ -1536,7 +1545,12 @@ def correr(fecha=None):
             jugadas_valor.append((visita, casa, jg))
         print()
 
-        filas_csv.append(",".join(fila_historica(hoy, j, r)))
+        # El historico solo admite lo que se dijo ANTES del primer pitcheo. Un
+        # juego ya empezado se sigue mostrando, pero registrarlo convertiria una
+        # prediccion tardia en una fila indistinguible de las selladas a tiempo,
+        # y todo el record se apoya en que esa distincion se sostenga.
+        if j["status"] in ANTES_DEL_PRIMER_PITCHEO:
+            filas_csv.append(",".join(fila_historica(hoy, j, r)))
 
     if totales_slate:
         print(f"📊 Total promedio del slate: {np.mean(totales_slate):.2f} (objetivo ~8.5)")

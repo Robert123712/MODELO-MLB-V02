@@ -523,6 +523,31 @@ class Fits(unittest.TestCase):
             self.assertLessEqual(calibrar._logloss(calibrar._aplicar(pairs,a,b)),calibrar._logloss(pairs)+1e-9)
 
 
+class JuegoEmpezado(unittest.TestCase):
+    """Un juego que arranca se queda en pantalla, pero no entra al historico."""
+
+    def test_a_started_game_is_still_shown(self):
+        # Antes salia de la lista al pasar a "In Progress" y desaparecia del
+        # JSON publicado: el juego se borraba de la pantalla justo al empezar.
+        for estado in m.EN_JUEGO:
+            self.assertIn(estado, m.ANTES_DEL_PRIMER_PITCHEO + m.EN_JUEGO,
+                          f"{estado} deberia seguir mostrandose")
+
+    def test_a_started_game_never_reaches_the_history(self):
+        # Todo el record se apoya en que cada fila se sello ANTES del primer
+        # pitcheo. Una prediccion tardia seria indistinguible de las buenas.
+        for estado in m.EN_JUEGO:
+            self.assertNotIn(estado, m.ANTES_DEL_PRIMER_PITCHEO,
+                             f"{estado} no puede registrarse en predicciones.csv")
+
+    def test_the_two_lists_do_not_overlap(self):
+        self.assertFalse(set(m.ANTES_DEL_PRIMER_PITCHEO) & set(m.EN_JUEGO))
+
+    def test_a_finished_game_is_not_simulated(self):
+        # Final no esta en ninguna: ya hay marcador real, proyectarlo no aporta.
+        self.assertNotIn("Final", m.ANTES_DEL_PRIMER_PITCHEO + m.EN_JUEGO)
+
+
 class TotalesF5(unittest.TestCase):
     """Lo que la pantalla enseña de las primeras cinco tiene que quedar medido."""
 
