@@ -1393,6 +1393,67 @@ def _perfil_reemplazo(p):
 
 # ---------------- PROCESO PRINCIPAL ----------------
 
+# ---------------- HISTORICO ----------------
+#
+# Las columnas se AGREGAN al final y nunca se reordenan: las filas viejas se
+# leen por nombre y las nuevas columnas quedan vacias en ellas, que es lo que
+# `validar._f` entiende como dato ausente.
+#
+# Un mercado que la pantalla muestra y el historico no guarda no puede
+# calificarse nunca, y el record perdido no se recupera despues. Por eso esta
+# lista cubre lo que se publica, no solo lo que se calificaba ayer.
+COLUMNAS_HISTORICO = [
+    "fecha", "visita", "casa", "abridor_v", "abridor_c",
+    "lam_v", "lam_c", "total_esp", "p_casa",
+    "p_over75", "p_over85", "p_over95",
+    "total_f5", "p_casa_f5", "p_empate_f5", "p_visita_f5", "p_over45_f5",
+    "rl_casa_f5", "rl_visita_f5", "p_nrfi",
+    "game_id", "generado_en", "game_datetime", "model_version", "p_casa_calibrada",
+    # Totales del juego completo que faltaban.
+    "p_over55", "p_over65", "p_over105", "p_over115", "p_over125",
+    # Run line. Solo el lado de la casa: en lineas de media carrera no hay push,
+    # asi que la visita es su complemento exacto y guardarlo seria repetirlo.
+    "rl_casa_m15", "rl_casa_m25", "rl_casa_p15", "rl_casa_p25",
+    # Totales por equipo.
+    "tt_visita_25", "tt_visita_35", "tt_visita_45", "tt_visita_55",
+    "tt_casa_25", "tt_casa_35", "tt_casa_45", "tt_casa_55",
+]
+
+
+def fila_historica(fecha, juego, r):
+    """Una prediccion del dia, en el orden de COLUMNAS_HISTORICO."""
+    overs, f5, nrfi = r["overs"], r["f5"], r["nrfi"]
+    p3 = lambda x: f"{x:.3f}"
+    valores = {
+        "fecha": fecha, "visita": r["visita"], "casa": r["casa"],
+        "abridor_v": r["abridor_v"], "abridor_c": r["abridor_c"],
+        "lam_v": f"{r['lam_v']:.2f}", "lam_c": f"{r['lam_c']:.2f}",
+        "total_esp": f"{r['total_esp']:.2f}",
+        # p_casa CRUDA en el CSV (no la calibrada): asi el historico mantiene
+        # la misma semantica y calibrar.py puede re-ajustar sobre todo el.
+        "p_casa": f"{r['p_casa_cruda']:.6f}",
+        "total_f5": f"{f5['total_esp']:.2f}",
+        "p_casa_f5": p3(f5["p_casa"]), "p_empate_f5": p3(f5["p_empate"]),
+        "p_visita_f5": p3(f5["p_visita"]), "p_over45_f5": p3(f5["overs"][4.5]),
+        "rl_casa_f5": p3(f5["rl_casa"]), "rl_visita_f5": p3(f5["rl_visita"]),
+        "p_nrfi": p3(nrfi["nrfi"]),
+        "game_id": str(juego["game_id"]), "generado_en": r["generado_en"],
+        "game_datetime": str(juego.get("game_datetime", "")),
+        "model_version": MODEL_VERSION, "p_casa_calibrada": f"{r['p_casa']:.6f}",
+    }
+    for linea in LINEAS:
+        valores[f"p_over{str(linea).replace('.', '')}"] = p3(overs[linea])
+    for etiqueta, clave in (("m15", "-1.5"), ("m25", "-2.5"), ("p15", "+1.5"), ("p25", "+2.5")):
+        valores[f"rl_casa_{etiqueta}"] = p3(r["rl_casa"][clave])
+    for lado, mercado in (("visita", r["tt_visita"]), ("casa", r["tt_casa"])):
+        for linea in LINEAS_TT:
+            valores[f"tt_{lado}_{str(linea).replace('.', '')}"] = p3(mercado[linea])
+    faltan = set(COLUMNAS_HISTORICO) - set(valores)
+    if faltan:
+        raise ValueError(f"Faltan columnas del historico: {sorted(faltan)}")
+    return [valores[c] for c in COLUMNAS_HISTORICO]
+
+
 def correr(fecha=None):
     """Corre el modelo para una fecha (mm/dd/YYYY). Sin argumento usa hoy."""
     hoy = fecha or date.today().strftime("%m/%d/%Y")
@@ -1468,19 +1529,7 @@ def correr(fecha=None):
             jugadas_valor.append((visita, casa, jg))
         print()
 
-        filas_csv.append(",".join([
-            hoy, visita, casa, r["abridor_v"], r["abridor_c"],
-            f"{r['lam_v']:.2f}", f"{r['lam_c']:.2f}", f"{r['total_esp']:.2f}",
-            # p_casa CRUDA en el CSV (no la calibrada): asi el historico mantiene
-            # la misma semantica y calibrar.py puede re-ajustar sobre todo el.
-            f"{r['p_casa_cruda']:.6f}", f"{overs[7.5]:.3f}", f"{overs[8.5]:.3f}", f"{overs[9.5]:.3f}",
-            f"{f5['total_esp']:.2f}", f"{f5['p_casa']:.3f}", f"{f5['p_empate']:.3f}",
-            f"{f5['p_visita']:.3f}", f"{overs_f5[4.5]:.3f}",
-            f"{f5['rl_casa']:.3f}", f"{f5['rl_visita']:.3f}",
-            f"{nrfi['nrfi']:.3f}",
-            str(j["game_id"]), r["generado_en"], str(j.get("game_datetime", "")),
-            MODEL_VERSION, f"{r['p_casa']:.6f}",
-        ]))
+        filas_csv.append(",".join(fila_historica(hoy, j, r)))
 
     if totales_slate:
         print(f"📊 Total promedio del slate: {np.mean(totales_slate):.2f} (objetivo ~8.5)")
@@ -1505,11 +1554,9 @@ def correr(fecha=None):
         return
 
     archivo = "predicciones.csv"
-    CABECERA = ("fecha,visita,casa,abridor_v,abridor_c,lam_v,lam_c,total_esp,p_casa,p_over75,p_over85,p_over95,"
-                "total_f5,p_casa_f5,p_empate_f5,p_visita_f5,p_over45_f5,rl_casa_f5,rl_visita_f5,p_nrfi,game_id,generado_en,game_datetime,model_version,p_casa_calibrada\n")
     import csv
     import io
-    columnas = CABECERA.strip().split(",")
+    columnas = COLUMNAS_HISTORICO
     anteriores = []
     if os.path.exists(archivo):
         with open(archivo, encoding="utf-8", newline="") as f:

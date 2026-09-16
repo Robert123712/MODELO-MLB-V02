@@ -37,6 +37,52 @@ class RunLine(unittest.TestCase):
         self.assertEqual(self.sim["p_casa_rl"], self.sim["rl_casa"]["-1.5"])
 
 
+class HistoricalRow(unittest.TestCase):
+    """Lo que la pantalla muestra tiene que quedar registrado para poder calificarse."""
+
+    def fila(self):
+        sim = m.simular_completo(4.2, 5.1)
+        f5_overs, p_casa5, p_visita5, p_empate5 = m.simular_f5(2.1, 2.4)
+        r = {
+            "visita": "Tigers", "casa": "Blue Jays",
+            "abridor_v": "A", "abridor_c": "B",
+            "lam_v": 4.2, "lam_c": 5.1, "total_esp": 9.3,
+            "p_casa": 0.55, "p_casa_cruda": 0.54,
+            "overs": sim["overs"], "tt_visita": sim["tt_visita"], "tt_casa": sim["tt_casa"],
+            "rl_casa": sim["rl_casa"], "rl_visita": sim["rl_visita"],
+            "p_casa_rl": sim["p_casa_rl"],
+            "f5": {"total_esp": 4.5, "p_casa": p_casa5, "p_visita": p_visita5,
+                   "p_empate": p_empate5, "overs": f5_overs,
+                   "rl_casa": p_casa5 + p_empate5, "rl_visita": p_visita5 + p_empate5},
+            "nrfi": {"nrfi": 0.52, "yrfi": 0.48},
+            "generado_en": "2026-09-16T00:00:00Z",
+        }
+        juego = {"game_id": 777, "game_datetime": "2026-09-16T23:07:00Z"}
+        return sim, dict(zip(m.COLUMNAS_HISTORICO, m.fila_historica("09/16/2026", juego, r)))
+
+    def test_row_matches_the_header(self):
+        sim, fila = self.fila()
+        self.assertEqual(len(fila), len(m.COLUMNAS_HISTORICO))
+        self.assertEqual(fila["game_id"], "777")
+
+    def test_every_published_market_is_recorded(self):
+        sim, fila = self.fila()
+        for linea in m.LINEAS:
+            self.assertEqual(fila[f"p_over{str(linea).replace('.', '')}"],
+                             f"{sim['overs'][linea]:.3f}")
+        for etiqueta, clave in (("m15", "-1.5"), ("m25", "-2.5"), ("p15", "+1.5"), ("p25", "+2.5")):
+            self.assertEqual(fila[f"rl_casa_{etiqueta}"], f"{sim['rl_casa'][clave]:.3f}")
+        for lado in ("visita", "casa"):
+            for linea in m.LINEAS_TT:
+                self.assertIn(f"tt_{lado}_{str(linea).replace('.', '')}", fila)
+
+    def test_a_missing_market_is_not_written_silently(self):
+        sim, _ = self.fila()
+        r = {"visita": "A", "casa": "B"}
+        with self.assertRaises((ValueError, KeyError)):
+            m.fila_historica("09/16/2026", {"game_id": 1}, r)
+
+
 class PublishedMarkets(unittest.TestCase):
     """Lo que el simulador calcula tiene que llegar al JSON que se publica."""
 
