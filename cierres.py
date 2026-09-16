@@ -111,6 +111,23 @@ def leer_marcador(payload):
     return {clave: filas[0] for clave, filas in encontrados.items() if len(filas) == 1}
 
 
+def juegos_del_dia(payload):
+    """Cuantos partidos trae el marcador, traigan momios o no.
+
+    Sirve para distinguir dos fracasos que se ven identicos desde afuera: que
+    ESPN no cubra la fecha, y que la cubra pero sin precios. El primero no tiene
+    arreglo aqui; el segundo significa que hay que pedir el cierre ANTES del
+    juego, porque despues el proveedor ya lo quito.
+    """
+    return sum(
+        1
+        for evento in payload.get("events", [])
+        for competencia in evento.get("competitions", [])
+        if sum(1 for c in competencia.get("competitors", [])
+               if c.get("homeAway") in ("home", "away")) == 2
+    )
+
+
 def _leidos():
     if not os.path.exists(ARCHIVO):
         return []
@@ -159,6 +176,11 @@ def capturar(fecha, predicciones, descargar=bajar):
                       **{c: cierre[c] for c in ("momio_visita", "momio_casa",
                                                 "run_line_casa", "total", "casa_de_apuestas")},
                       "capturado_en": capturado})
+    # "0 encontrados" no dice nada por si solo. El desglose sí: separa "ESPN no
+    # cubre la fecha" de "la cubre sin precios" de "trae precios que no cruzan
+    # con ningun equipo del historico", que piden arreglos distintos.
+    print(f"   {fecha}: ESPN {juegos_del_dia(payload)} juegos, {len(mercado)} con momios, "
+          f"{len(filas)} cruzados con predicciones", flush=True)
     return filas
 
 

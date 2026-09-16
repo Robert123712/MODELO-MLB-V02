@@ -82,6 +82,20 @@ class ClosingLine(unittest.TestCase):
         vacio = {"provider": {"displayName": "x"}}
         self.assertEqual(cierres.leer_marcador({"events": [_evento("A", "B", vacio)]}), {})
 
+    def test_counts_the_games_of_the_day_even_without_prices(self):
+        """Un dia cubierto sin momios no se ve igual que un dia sin cobertura.
+
+        Los dos terminan en cero cierres guardados, pero piden arreglos
+        opuestos: si ESPN no cubre la fecha no hay nada que hacer aqui, y si la
+        cubre sin precios significa que el cierre hay que pedirlo ANTES del
+        juego, porque despues el proveedor ya lo quito.
+        """
+        sin_precios = {"events": [_evento("A Team", "B Team", None),
+                                  _evento("C Team", "D Team", None)]}
+        self.assertEqual(cierres.juegos_del_dia(sin_precios), 2)
+        self.assertEqual(cierres.leer_marcador(sin_precios), {})
+        self.assertEqual(cierres.juegos_del_dia({"events": []}), 0)
+
     def test_a_doubleheader_is_left_out(self):
         payload = {"events": [_evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN),
                               _evento("Miami Marlins", "Arizona Diamondbacks", CIERRE_ESPN)]}
