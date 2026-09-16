@@ -251,14 +251,24 @@ def _team_schedule(tid, hoy):
             _cache_team_schedule[key] = []
     return _cache_team_schedule[key]
 
-def datos_pitcher(nombre):
-    """Devuelve dict con fip, ip_esp, mano, k9, bb9, fip_reciente. Cacheado."""
-    if nombre in cache_pitcher:
-        return cache_pitcher[nombre]
+def datos_pitcher(nombre, corte=None):
+    """Devuelve dict con fip, ip_esp, mano, k9, bb9, fip_reciente. Cacheado.
+
+    Con `corte` (mm/dd/YYYY) el estado se reconstruye como estaba ESE dia:
+    se descartan las aperturas posteriores y el acumulado de temporada se
+    resuma del gameLog recortado, porque el endpoint de temporada solo sabe
+    dar el total hasta hoy.
+    """
+    # La clave lleva el corte. Sin el, una consulta con fecha devolveria el
+    # estado de hoy que quedo cacheado en la consulta anterior, y la fuga
+    # volveria por la puerta de atras justo despues de haberla cerrado.
+    clave = (nombre, corte)
+    if clave in cache_pitcher:
+        return cache_pitcher[clave]
     try:
         res = statsapi.lookup_player(nombre)
         if not res:
-            return _guardar_pitcher(nombre, None)
+            return _guardar_pitcher(clave, None)
         pid = res[0]["id"]
 
         persona = statsapi.get("person", {"personId": pid})
@@ -267,7 +277,7 @@ def datos_pitcher(nombre):
         data = statsapi.get("person", {"personId": pid, "hydrate": "stats(group=[pitching],type=[season])"})
         people = data.get("people", [])
         if not people:
-            return _guardar_pitcher(nombre, {"fip": None, "ip_esp": None, "mano": mano, "k9": None, "bb9": None, "baa": None, "fip_reciente": None})
+            return _guardar_pitcher(clave, {"fip": None, "ip_esp": None, "mano": mano, "k9": None, "bb9": None, "baa": None, "fip_reciente": None})
         stats_arr = people[0].get("stats", [])
         season_stats = None
         for g in stats_arr:
@@ -277,7 +287,7 @@ def datos_pitcher(nombre):
                     season_stats = splits[0]["stat"]
                     break
         if not season_stats:
-            return _guardar_pitcher(nombre, {"fip": None, "ip_esp": None, "mano": mano, "k9": None, "bb9": None, "baa": None, "fip_reciente": None})
+            return _guardar_pitcher(clave, {"fip": None, "ip_esp": None, "mano": mano, "k9": None, "bb9": None, "baa": None, "fip_reciente": None})
 
         s = season_stats
         ip_temp = ip_a_decimal(s.get("inningsPitched", 0))
@@ -300,6 +310,20 @@ def datos_pitcher(nombre):
                 if g.get("group", {}).get("displayName") == "pitching" and g.get("type", {}).get("displayName") == "gameLog":
                     log_splits = g.get("splits", [])
                     break
+        # Todo lo que sigue sale del log recortado: la forma reciente, el park
+        # y, con corte, tambien el acumulado de temporada.
+        log_splits = anteriores_a(log_splits, corte)
+        if corte is not None:
+            s = totales_de(log_splits)
+            ip_temp = ip_a_decimal(s.get("inningsPitched", 0))
+            k = s.get("strikeOuts", 0) or 0
+            bb = s.get("baseOnBalls", 0) or 0
+            hr = s.get("homeRuns", 0) or 0
+            hbp = s.get("hitByPitch", 0) or 0
+            baa = float(s["avg"]) if s.get("avg") else None
+            fip = calcular_fip(hr, bb, hbp, k, ip_temp)
+            k9 = k * 9 / ip_temp if ip_temp > 0 else 0
+            bb9 = bb * 9 / ip_temp if ip_temp > 0 else 0
         ips = [ip_a_decimal(g["stat"].get("inningsPitched", 0)) for g in log_splits[-3:]]
         ip_esp = sum(ips) / len(ips) if ips else 5.0
         ip_esp = max(3.5, min(ip_esp, 7.0))
@@ -341,7 +365,7 @@ def datos_pitcher(nombre):
         fip_reciente = (sum(fj * ipj for fj, ipj in fips_recientes) / ip_reciente
                         if ip_reciente > 0 else None)
 
-        return _guardar_pitcher(nombre, {
+        return _guardar_pitcher(clave, {
             "fip": fip, "ip_esp": ip_esp, "mano": mano,
             "k9": k9, "bb9": bb9, "baa": baa,
             "fip_reciente": fip_reciente,
@@ -350,10 +374,66 @@ def datos_pitcher(nombre):
         })
     except Exception as e:
         print(f"⚠ Error con pitcher {nombre}: {e}")
-        return _guardar_pitcher(nombre, None)
+        return _guardar_pitcher(clave, None)
 
-def _guardar_pitcher(nombre, valor):
-    cache_pitcher[nombre] = valor
+def _fecha_log(split):
+    """La fecha de una entrada del gameLog, como (yyyy, mm, dd) comparable."""
+    crudo = str(split.get("date") or "")
+    partes = crudo.split("-")
+    return tuple(partes) if len(partes) == 3 else None
+
+
+def anteriores_a(log_splits, corte):
+    """Las aperturas previas al dia del juego, en orden.
+
+    `corte` viene en mm/dd/YYYY, que es como el resto del programa maneja las
+    fechas; el gameLog las trae en YYYY-MM-DD. Se comparan por partes y no como
+    texto: con el año al final, "12/30/2026" seria mayor que "01/02/2027".
+
+    El corte es ESTRICTO. Una apertura del mismo dia ya termino cuando se
+    escribe en el log, asi que incluirla seria contarle al modelo el juego que
+    esta por proyectar.
+    """
+    if corte is None:
+        return list(log_splits)
+    mm, dd, yyyy = corte.split("/")
+    limite = (yyyy, mm, dd)
+    conservadas = []
+    for split in log_splits:
+        fecha = _fecha_log(split)
+        # Una entrada sin fecha no se puede ubicar en el tiempo. Se descarta:
+        # incluirla a ciegas es exactamente el riesgo que este corte evita.
+        if fecha and fecha < limite:
+            conservadas.append(split)
+    return conservadas
+
+
+def totales_de(log_splits):
+    """Suma las aperturas en el acumulado de temporada que tendrian ese dia.
+
+    El endpoint `type=[season]` da la temporada hasta HOY y no acepta fecha, asi
+    que para una fecha pasada el acumulado hay que rehacerlo. Sumar el gameLog
+    da el mismo numero que el endpoint cuando no se recorta nada, que es lo que
+    lo hace verificable.
+    """
+    entero = lambda g, campo: g["stat"].get(campo, 0) or 0
+    ip = sum(ip_a_decimal(g["stat"].get("inningsPitched", 0)) for g in log_splits)
+    hits = sum(entero(g, "hits") for g in log_splits)
+    turnos = sum(entero(g, "atBats") for g in log_splits)
+    return {
+        "inningsPitched": ip,
+        "strikeOuts": sum(entero(g, "strikeOuts") for g in log_splits),
+        "baseOnBalls": sum(entero(g, "baseOnBalls") for g in log_splits),
+        "homeRuns": sum(entero(g, "homeRuns") for g in log_splits),
+        "hitByPitch": sum(entero(g, "hitByPitch") for g in log_splits),
+        # El promedio de los rivales no se puede promediar entre juegos: se
+        # recalcula de hits y turnos, que si son sumables.
+        "avg": f"{hits / turnos:.3f}" if turnos > 0 else None,
+    }
+
+
+def _guardar_pitcher(clave, valor):
+    cache_pitcher[clave] = valor
     return valor
 
 def fip_blend(p):

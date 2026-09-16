@@ -552,6 +552,127 @@ class JuegoPublicadoSeConserva(unittest.TestCase):
         self.assertEqual(generar_json.conservar_publicados([juego], []), [juego])
 
 
+def _log(fecha, ip, k, bb, hr=0, hbp=0, hits=4, turnos=20, local=True):
+    return {"date": fecha, "isHome": local,
+            "team": {"name": "Chicago Cubs"}, "opponent": {"name": "St. Louis Cardinals"},
+            "stat": {"inningsPitched": ip, "strikeOuts": k, "baseOnBalls": bb,
+                     "homeRuns": hr, "hitByPitch": hbp, "hits": hits, "atBats": turnos}}
+
+
+class EstadoAlDiaDelJuego(unittest.TestCase):
+    """Reconstruir al abridor como estaba ese dia, sin mirar lo que vino despues."""
+
+    def setUp(self):
+        self.log = [_log("2026-07-01", "6.0", 7, 1), _log("2026-07-08", "5.1", 5, 3, hr=2),
+                    _log("2026-09-10", "7.0", 10, 0)]
+
+    def test_a_start_after_the_cut_is_dropped(self):
+        previas = m.anteriores_a(self.log, "07/15/2026")
+        self.assertEqual([g["date"] for g in previas], ["2026-07-01", "2026-07-08"])
+
+    def test_the_cut_is_strict_on_the_same_day(self):
+        # La apertura del mismo dia ya termino cuando se escribe en el log:
+        # incluirla seria contarle al modelo el juego que va a proyectar.
+        previas = m.anteriores_a(self.log, "07/08/2026")
+        self.assertEqual([g["date"] for g in previas], ["2026-07-01"])
+
+    def test_without_a_cut_nothing_is_dropped(self):
+        self.assertEqual(len(m.anteriores_a(self.log, None)), 3)
+
+    def test_the_year_is_compared_before_the_month(self):
+        # Con el año al final, "12/30/2026" seria mayor que "01/02/2027" como
+        # texto, y una temporada entera se colaria.
+        log = [_log("2026-12-30", "6.0", 6, 1)]
+        self.assertEqual(m.anteriores_a(log, "01/02/2027"), log)
+        self.assertEqual(m.anteriores_a(log, "12/30/2026"), [])
+
+    def test_an_entry_without_a_date_is_discarded(self):
+        log = [{"stat": {"inningsPitched": "6.0"}}, _log("2026-07-01", "6.0", 7, 1)]
+        self.assertEqual(len(m.anteriores_a(log, "07/15/2026")), 1)
+
+    def test_the_season_total_is_rebuilt_from_the_trimmed_log(self):
+        totales = m.totales_de(m.anteriores_a(self.log, "07/15/2026"))
+        self.assertAlmostEqual(totales["inningsPitched"], 11.333, places=2)
+        self.assertEqual(totales["strikeOuts"], 12)
+        self.assertEqual(totales["homeRuns"], 2)
+
+    def test_summing_the_whole_log_matches_the_season_endpoint(self):
+        # Lo que hace verificable la reconstruccion: sin recortar nada tiene que
+        # dar el mismo acumulado que el endpoint de temporada.
+        totales = m.totales_de(self.log)
+        self.assertEqual(totales["strikeOuts"], 7 + 5 + 10)
+        self.assertEqual(totales["baseOnBalls"], 1 + 3 + 0)
+        self.assertAlmostEqual(totales["inningsPitched"], 18.333, places=2)
+
+    def test_the_opponent_average_is_not_an_average_of_averages(self):
+        # Se rehace de hits y turnos, que si son sumables entre juegos.
+        log = [_log("2026-07-01", "6.0", 7, 1, hits=6, turnos=20),
+               _log("2026-07-08", "5.0", 5, 1, hits=2, turnos=20)]
+        self.assertEqual(m.totales_de(log)["avg"], f"{8 / 40:.3f}")
+
+    def test_the_cache_does_not_serve_todays_state_for_a_past_date(self):
+        # Si la clave fuera solo el nombre, la consulta con corte devolveria lo
+        # que quedo cacheado de hoy y la fuga volveria por la puerta de atras.
+        m.cache_pitcher.clear()
+        m._guardar_pitcher(("Shota Imanaga", None), {"fip": 3.10})
+        self.assertIsNone(m.cache_pitcher.get(("Shota Imanaga", "07/15/2026")))
+        m._guardar_pitcher(("Shota Imanaga", "07/15/2026"), {"fip": 4.80})
+        self.assertEqual(m.cache_pitcher[("Shota Imanaga", None)]["fip"], 3.10)
+        self.assertEqual(m.cache_pitcher[("Shota Imanaga", "07/15/2026")]["fip"], 4.80)
+        m.cache_pitcher.clear()
+
+
+class AbridorConCorte(unittest.TestCase):
+    """El corte tiene que llegar hasta el numero, no quedarse en la funcion suelta."""
+
+    def _statsapi(self, log):
+        def get(endpoint, params=None):
+            hydrate = (params or {}).get("hydrate", "")
+            if "gameLog" in hydrate:
+                return {"people": [{"stats": [{"group": {"displayName": "pitching"},
+                                               "type": {"displayName": "gameLog"},
+                                               "splits": log}]}]}
+            if "season" in hydrate:
+                # El endpoint de temporada SIEMPRE da el total hasta hoy: no
+                # acepta fecha. Por eso con corte hay que ignorarlo y resumar.
+                return {"people": [{"stats": [{"group": {"displayName": "pitching"},
+                                               "type": {"displayName": "season"},
+                                               "splits": [{"stat": m.totales_de(log)}]}]}]}
+            return {"people": [{"pitchHand": {"code": "L"}}]}
+        return get
+
+    def test_the_cut_changes_the_number_the_model_receives(self):
+        # Dos aperturas malas en julio y una dominante en septiembre. Proyectar
+        # el 15 de julio no puede saber de la de septiembre.
+        log = [_log("2026-07-01", "5.0", 3, 4, hr=3), _log("2026-07-08", "4.0", 2, 5, hr=2),
+               _log("2026-09-10", "8.0", 12, 0, hr=0)]
+        m.cache_pitcher.clear()
+        with patch.object(m.statsapi, "lookup_player", return_value=[{"id": 1}]), \
+             patch.object(m.statsapi, "get", side_effect=self._statsapi(log)):
+            hoy = m.datos_pitcher("Abridor X")
+            al_15_de_julio = m.datos_pitcher("Abridor X", corte="07/15/2026")
+        m.cache_pitcher.clear()
+        # Visto desde hoy parece mejor pitcher de lo que era en julio.
+        self.assertLess(hoy["fip"], al_15_de_julio["fip"])
+        self.assertAlmostEqual(al_15_de_julio["ip_temp"], 9.0, places=2)
+        self.assertAlmostEqual(hoy["ip_temp"], 17.0, places=2)
+        # Y la forma reciente tampoco puede venir de septiembre.
+        self.assertLess(hoy["ip_reciente"], al_15_de_julio["ip_reciente"] + 8.1)
+        self.assertGreater(al_15_de_julio["fip_reciente"], hoy["fip_reciente"])
+
+    def test_a_pitcher_with_nothing_before_the_cut_has_no_season(self):
+        # Su primera apertura es posterior: ese dia no habia historial que leer,
+        # y eso es un dato valido, no un error que rellenar con lo de despues.
+        log = [_log("2026-09-10", "8.0", 12, 0)]
+        m.cache_pitcher.clear()
+        with patch.object(m.statsapi, "lookup_player", return_value=[{"id": 1}]), \
+             patch.object(m.statsapi, "get", side_effect=self._statsapi(log)):
+            previo = m.datos_pitcher("Novato", corte="07/15/2026")
+        m.cache_pitcher.clear()
+        self.assertEqual(previo["ip_temp"], 0)
+        self.assertIsNone(previo["fip"])
+
+
 class FugaDeInformacion(unittest.TestCase):
     """Correr el modelo sobre una fecha pasada lee estadisticas del futuro."""
 
