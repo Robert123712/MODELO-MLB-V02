@@ -66,20 +66,32 @@ def _momio(crudo):
     return n if n is not None and abs(n) >= 100 else None
 
 
-def _precio(odds):
-    """El precio vigente de un juego por empezar.
+# Donde ESPN guarda el precio del ganador, en orden de preferencia. La primera
+# captura real dejo claro que `homeTeamOdds.moneyLine` viene vacio antes del
+# juego —ese bloque solo trae favorite/underdog— y que el precio vive en
+# `moneyline.<lado>.<momento>.odds`. Para una foto pre-juego queremos el precio
+# de ahora; `close` va al final porque solo existe cuando el juego termino.
+MOMENTOS = ("current", "live", "open", "close")
 
-    Antes del primer pitcheo no existen los campos `close` —ese bloque lo llena
-    el proveedor cuando el juego termina—, asi que el precio plano ES el precio
-    de ahora. Se lee ese, y no `close`, a proposito.
-    """
+
+def _del_moneyline(odds, lado):
+    """El precio del ganador, de donde ESPN lo tenga."""
+    bloque = ((odds.get("moneyline") or {}).get(lado) or {})
+    for momento in MOMENTOS:
+        precio = _momio((bloque.get(momento) or {}).get("odds"))
+        if precio is not None:
+            return precio
+    # Ruta plana, por si alguna respuesta si la llena.
+    return _momio((odds.get(f"{lado}TeamOdds") or {}).get("moneyLine"))
+
+
+def _precio(odds):
+    """El precio vigente de un juego por empezar."""
     if not isinstance(odds, dict):
         return None
-    casa = odds.get("homeTeamOdds") or {}
-    visita = odds.get("awayTeamOdds") or {}
     return {
-        "momio_casa": _momio(casa.get("moneyLine")),
-        "momio_visita": _momio(visita.get("moneyLine")),
+        "momio_casa": _del_moneyline(odds, "home"),
+        "momio_visita": _del_moneyline(odds, "away"),
         "total": _numero(odds.get("overUnder")),
         "run_line_casa": _numero(odds.get("spread")),
         "casa_de_apuestas": (odds.get("provider") or {}).get("displayName")

@@ -7,6 +7,7 @@ import calibrar
 import cierres
 import metricas_edgebook
 import precios
+import generar_json
 import modelo_diario as m
 import validar
 import valor
@@ -521,6 +522,76 @@ class Fits(unittest.TestCase):
             self.assertTrue(math.isfinite(a) and math.isfinite(b))
             self.assertGreaterEqual(b,0)
             self.assertLessEqual(calibrar._logloss(calibrar._aplicar(pairs,a,b)),calibrar._logloss(pairs)+1e-9)
+
+
+class MoneylineDeESPN(unittest.TestCase):
+    """El precio del ganador no vive donde el codigo lo buscaba primero."""
+
+    def test_reads_the_moneyline_from_the_nested_block(self):
+        # Forma real observada: homeTeamOdds solo trae favorite/underdog, y el
+        # precio esta en moneyline.<lado>.<momento>.odds.
+        odds = {"provider": {"displayName": "DraftKings"}, "overUnder": 8.5, "spread": -1.5,
+                "homeTeamOdds": {"favorite": True, "underdog": False},
+                "awayTeamOdds": {"favorite": False, "underdog": True},
+                "moneyline": {"home": {"current": {"odds": -145}},
+                              "away": {"current": {"odds": 125}}}}
+        precio = precios._precio(odds)
+        self.assertEqual(precio["momio_casa"], -145)
+        self.assertEqual(precio["momio_visita"], 125)
+
+    def test_prefers_the_current_price_over_the_closing_one(self):
+        # En una foto pre-juego queremos el precio de ahora. `close` solo existe
+        # cuando el juego termino, asi que va al final de la preferencia.
+        odds = {"moneyline": {"home": {"close": {"odds": -200}, "current": {"odds": -145}},
+                              "away": {"close": {"odds": 170}, "current": {"odds": 125}}}}
+        self.assertEqual(precios._precio(odds)["momio_casa"], -145)
+
+    def test_still_reads_the_flat_route_if_it_is_filled(self):
+        odds = {"homeTeamOdds": {"moneyLine": -110}, "awayTeamOdds": {"moneyLine": -105}}
+        self.assertEqual(precios._precio(odds)["momio_casa"], -110)
+
+    def test_a_block_with_only_favorite_yields_no_price(self):
+        odds = {"overUnder": 8.5, "homeTeamOdds": {"favorite": True, "underdog": False}}
+        self.assertIsNone(precios._precio(odds)["momio_casa"])
+
+
+class JuegoPublicadoSeConserva(unittest.TestCase):
+    """Un juego que ya se publico hoy no desaparece al empezar."""
+
+    def _juego(self, visita, casa, hora):
+        return {"visita": visita, "casa": casa, "game_datetime": hora, "p_casa": 0.55}
+
+    def test_a_game_that_left_the_simulation_is_kept(self):
+        previos = [self._juego("SF", "STL", "2026-09-16T17:15:00Z"),
+                   self._juego("NYY", "MIN", "2026-09-16T17:40:00Z")]
+        # SF@STL empezo y salio de la simulacion: statsapi deja de dar abridor
+        # probable y el estado ya no es previo al primer pitcheo.
+        nuevos = [self._juego("NYY", "MIN", "2026-09-16T17:40:00Z")]
+        salida = generar_json.conservar_publicados(nuevos, previos)
+        self.assertEqual(len(salida), 2)
+        self.assertIn(("SF", "STL"), [(j["visita"], j["casa"]) for j in salida])
+
+    def test_the_kept_game_is_the_projection_already_published(self):
+        """No se vuelve a simular: se conserva lo que se dijo antes del inicio."""
+        previo = self._juego("SF", "STL", "2026-09-16T17:15:00Z")
+        previo["p_casa"] = 0.61
+        salida = generar_json.conservar_publicados([], [previo])
+        self.assertEqual(salida[0]["p_casa"], 0.61)
+
+    def test_a_game_still_simulated_is_not_duplicated(self):
+        juego = self._juego("NYY", "MIN", "2026-09-16T17:40:00Z")
+        salida = generar_json.conservar_publicados([juego], [juego])
+        self.assertEqual(len(salida), 1)
+
+    def test_the_list_is_ordered_by_start_time(self):
+        tarde = self._juego("MIA", "ARI", "2026-09-17T01:40:00Z")
+        temprano = self._juego("SF", "STL", "2026-09-16T17:15:00Z")
+        salida = generar_json.conservar_publicados([tarde], [temprano])
+        self.assertEqual([j["visita"] for j in salida], ["SF", "MIA"])
+
+    def test_the_first_run_of_the_day_has_nothing_to_keep(self):
+        juego = self._juego("NYY", "MIN", "2026-09-16T17:40:00Z")
+        self.assertEqual(generar_json.conservar_publicados([juego], []), [juego])
 
 
 class JuegoEmpezado(unittest.TestCase):
