@@ -1466,9 +1466,38 @@ def fila_historica(fecha, juego, r):
     return [valores[c] for c in COLUMNAS_HISTORICO]
 
 
+def con_fuga(fecha, hoy=None):
+    """Si correr el modelo para esa fecha usaria informacion del futuro.
+
+    Las estadisticas del abridor se piden con `type=[season]`, que devuelve la
+    temporada acumulada HASTA HOY, y la forma reciente sale de las ultimas tres
+    aperturas del gameLog completo. Para un partido de julio corrido en
+    septiembre, eso son numeros que nadie tenia el dia del juego.
+
+    El resultado no falla: sale un pronostico que se ve normal y que acierta de
+    mas porque ya vio lo que paso. Ese es justo el modo de error que ningun
+    numero delata solo, y por eso se bloquea en vez de advertirse.
+    """
+    hoy = hoy or date.today().strftime("%m/%d/%Y")
+    def clave(f):
+        mm, dd, yyyy = f.split("/")
+        return (yyyy, mm, dd)
+    return clave(fecha) < clave(hoy)
+
+
 def correr(fecha=None):
     """Corre el modelo para una fecha (mm/dd/YYYY). Sin argumento usa hoy."""
     hoy = fecha or date.today().strftime("%m/%d/%Y")
+    if con_fuga(hoy) and os.environ.get("ACEPTO_LA_FUGA") != "1":
+        raise SystemExit(
+            f"✋ {hoy} ya paso, y el modelo leeria estadisticas de hoy para\n"
+            "   proyectarlo: FIP de temporada acumulado y las ultimas tres\n"
+            "   aperturas del gameLog completo. El pronostico saldria bien y\n"
+            "   estaria contaminado.\n"
+            "   Un backtest honesto necesita reconstruir el estado de cada\n"
+            "   abridor al dia del juego, que todavia no existe aqui.\n"
+            "   Si de verdad quieres la corrida contaminada: ACEPTO_LA_FUGA=1"
+        )
     juegos = statsapi.schedule(date=hoy)
     # Un juego que ya empezo no se borra de la pantalla. La proyeccion es
     # matematica de antes del primer pitcheo —abridores, parque, clima— y no

@@ -356,7 +356,10 @@ class Pipeline(unittest.TestCase):
                 with open('predicciones.csv','w') as f:
                     f.write('fecha,visita,casa,p_casa\n09/01/2026,A,H,0.55\n')
                 games=[self.game,dict(self.game,game_id=124)]
-                with patch.object(m.statsapi,'schedule',return_value=games), patch.object(m,'f5_frac_liga',return_value=.56), patch.object(valor,'obtener_odds',return_value={}), patch.object(tracker,'registrar'), redirect_stdout(StringIO()):
+                # Fecha pasada con statsapi simulado: no hay estadisticas reales
+                # que se puedan colar, asi que la prueba declara la excepcion en
+                # vez de que la guarda la confunda con un backtest contaminado.
+                with patch.dict(os.environ, {'ACEPTO_LA_FUGA': '1'}), patch.object(m.statsapi,'schedule',return_value=games), patch.object(m,'f5_frac_liga',return_value=.56), patch.object(valor,'obtener_odds',return_value={}), patch.object(tracker,'registrar'), redirect_stdout(StringIO()):
                     m.correr('09/09/2026')
                     m.correr('09/09/2026')
                 with open('predicciones.csv') as f:
@@ -390,6 +393,9 @@ class Pipeline(unittest.TestCase):
                     patch.object(valor, 'obtener_odds', return_value={}),
                     patch.object(tracker, 'registrar'),
                 )
+                # Igual que arriba: statsapi simulado, sin estadisticas reales
+                # que puedan colarse desde el futuro.
+                os.environ["ACEPTO_LA_FUGA"] = "1"
                 os.environ["REGISTRAR_HISTORICO"] = "0"
                 a, b, c, e = parches()
                 with a, b, c, e, redirect_stdout(StringIO()):
@@ -406,6 +412,9 @@ class Pipeline(unittest.TestCase):
                 self.assertEqual([r['game_id'] for r in filas], ['123'])
             finally:
                 os.chdir(old)
+                # Si se quedara puesta, la guarda de fuga quedaria desactivada
+                # para las pruebas que corran despues y dejaria de proteger.
+                os.environ.pop("ACEPTO_LA_FUGA", None)
                 if previo is None:
                     os.environ.pop("REGISTRAR_HISTORICO", None)
                 else:
@@ -541,6 +550,29 @@ class JuegoPublicadoSeConserva(unittest.TestCase):
     def test_the_first_run_of_the_day_has_nothing_to_keep(self):
         juego = self._juego("NYY", "MIN", "2026-09-16T17:40:00Z")
         self.assertEqual(generar_json.conservar_publicados([juego], []), [juego])
+
+
+class FugaDeInformacion(unittest.TestCase):
+    """Correr el modelo sobre una fecha pasada lee estadisticas del futuro."""
+
+    def test_a_past_date_would_leak(self):
+        # El FIP se pide con type=[season], que es la temporada acumulada hasta
+        # hoy, y la forma reciente son las ultimas tres aperturas del gameLog
+        # entero. Para un juego de julio corrido en septiembre, eso es ver el
+        # resultado antes de pronosticarlo.
+        self.assertTrue(m.con_fuga("07/15/2026", "09/16/2026"))
+        self.assertTrue(m.con_fuga("09/15/2026", "09/16/2026"))
+
+    def test_today_and_tomorrow_are_clean(self):
+        self.assertFalse(m.con_fuga("09/16/2026", "09/16/2026"))
+        self.assertFalse(m.con_fuga("09/17/2026", "09/16/2026"))
+
+    def test_the_year_is_compared_before_the_month(self):
+        # Diciembre es "mayor" que enero dentro del año, pero un diciembre
+        # anterior sigue siendo pasado. Comparar mm/dd antes que el año daria
+        # justo al reves y dejaria pasar una corrida contaminada.
+        self.assertTrue(m.con_fuga("12/30/2026", "01/02/2027"))
+        self.assertFalse(m.con_fuga("01/02/2027", "12/30/2026"))
 
 
 class JuegoEmpezado(unittest.TestCase):
