@@ -1,0 +1,63 @@
+{
+ "revisado_en": "2026-09-16T17:27:17.808283+00:00",
+ "fecha": "09/16/2026",
+ "juegos_sin_moneyline": 13,
+ "muestras": [
+  {
+   "llaves": [
+    "awayTeamOdds",
+    "details",
+    "footer",
+    "header",
+    "homeTeamOdds",
+    "link",
+    "moneyline",
+    "overUnder",
+    "pointSpread",
+    "provider",
+    "spread",
+    "total"
+   ],
+   "homeTeamOdds": [
+    "favorite",
+    "favoriteAtOpen",
+    "team",
+    "underdog"
+   ],
+   "awayTeamOdds": [
+    "favorite",
+    "favoriteAtOpen",
+    "team",
+    "underdog"
+   ]
+  },
+  {
+   "llaves": [
+    "awayTeamOdds",
+    "details",
+    "footer",
+    "header",
+    "homeTeamOdds",
+    "link",
+    "moneyline",
+    "overUnder",
+    "pointSpread",
+    "provider",
+    "spread",
+    "total"
+   ],
+   "homeTeamOdds": [
+    "favorite",
+    "favoriteAtOpen",
+    "team",
+    "underdog"
+   ],
+   "awayTeamOdds": [
+    "favorite",
+    "favoriteAtOpen",
+    "team",
+    "underdog"
+   ]
+  }
+ ]
+}
