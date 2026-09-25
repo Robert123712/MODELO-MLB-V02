@@ -22,6 +22,16 @@ from app import SimularRequest, _ejecutar_simulacion
 
 
 def _clave(juego):
+    """Identidad del juego. El game_id de statsapi manda porque no cambia.
+
+    Antes la clave incluia la hora de inicio, y MLB la mueve durante el dia: el
+    juego reaparecia con la hora nueva y la copia conservada seguia ahi con la
+    vieja, o sea el mismo partido publicado dos veces. Sin game_id —no deberia
+    pasar— se cae a equipos mas hora, que es lo unico que queda.
+    """
+    gid = juego.get("game_id")
+    if gid:
+        return ("gid", str(gid))
     return (juego.get("visita"), juego.get("casa"), str(juego.get("game_datetime") or ""))
 
 
@@ -38,7 +48,12 @@ def conservar_publicados(nuevos, previos):
     orden lo pone la hora de inicio para que la lista no baile entre corridas.
     """
     vistos = {_clave(j) for j in nuevos}
-    rescatados = [j for j in previos if _clave(j) not in vistos]
+    rescatados = []
+    for j in previos:
+        if _clave(j) in vistos:
+            continue
+        vistos.add(_clave(j))   # un juego se conserva UNA vez, pase lo que pase
+        rescatados.append(j)
     return sorted(nuevos + rescatados, key=lambda j: str(j.get("game_datetime") or ""))
 
 

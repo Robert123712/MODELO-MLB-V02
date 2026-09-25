@@ -42,6 +42,11 @@ LINEAS_RL_F5 = [0.5, 1.5]
 # segunda se muestran pero nunca se registran.
 ANTES_DEL_PRIMER_PITCHEO = ("Scheduled", "Pre-Game", "Warmup")
 EN_JUEGO = ("In Progress", "Live", "Manager challenge", "Delayed", "Delayed Start")
+# Un abridor que todavia no se anuncia (segundo juego de una doble cartelera,
+# juego de bullpen) no tiene nombre en statsapi. El juego se simula igual con
+# perfil de reemplazo y este es el nombre que se muestra, para que la tarjeta
+# diga por que la proyeccion vale menos en vez de desaparecer.
+ABRIDOR_POR_ANUNCIAR = "Por confirmar"
 TEMPORADA = 2026
 INICIO_TEMP = "03/25/2026"
 
@@ -1380,8 +1385,6 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False, corte=None):
     generado_en = datetime.now(timezone.utc).isoformat()
     visita, casa = juego["away_name"], juego["home_name"]
     nombre_v, nombre_c = juego.get("away_probable_pitcher"), juego.get("home_probable_pitcher")
-    if not nombre_v or not nombre_c:
-        return None
     if frac_f5 is None:
         frac_f5 = f5_frac_liga(hoy)
 
@@ -1391,14 +1394,17 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False, corte=None):
     # probado, pero `con_fuga` sigue bloqueando la corrida pasada hasta que las
     # otras fuentes tambien lo honren. Sin el parametro aqui, esa conexion nunca
     # llegaria a hacerse.
-    pv = datos_pitcher(nombre_v, corte) or {}
-    pc = datos_pitcher(nombre_c, corte) or {}
+    pv = (datos_pitcher(nombre_v, corte) or {}) if nombre_v else {}
+    pc = (datos_pitcher(nombre_c, corte) or {}) if nombre_c else {}
 
     # Nivel de reemplazo: un abridor sin stats de la temporada (regresa de lesion,
-    # debuta, lo suben de ligas menores) ya no tumba el juego entero. Se le asigna
-    # un perfil de reemplazo y el juego se marca como estimado.
+    # debuta, lo suben de ligas menores) o sin anunciar todavia ya no tumba el
+    # juego entero. Se le asigna un perfil de reemplazo y el juego se marca como
+    # estimado, que es lo que la tarjeta avisa.
     est_v = pv.get("fip") is None
     est_c = pc.get("fip") is None
+    nombre_v = nombre_v or ABRIDOR_POR_ANUNCIAR
+    nombre_c = nombre_c or ABRIDOR_POR_ANUNCIAR
     pv = _perfil_reemplazo(pv) if est_v else pv
     pc = _perfil_reemplazo(pc) if est_c else pc
 
@@ -1632,8 +1638,11 @@ def correr(fecha=None):
     # matematica de antes del primer pitcheo —abridores, parque, clima— y no
     # cambia porque el juego arranque: sigue siendo lo que el modelo dijo, que
     # es justo lo que uno quiere ver mientras el partido corre.
-    modelables = [j for j in juegos if j["status"] in ANTES_DEL_PRIMER_PITCHEO + EN_JUEGO
-                  and j["away_probable_pitcher"] and j["home_probable_pitcher"]]
+    # El unico requisito es el estado. Pedir tambien abridor probable borraba de
+    # la pantalla el segundo juego de una doble cartelera y cualquier juego de
+    # bullpen: statsapi no los anuncia y el juego nunca aparecia, ni siquiera
+    # marcado. Sin abridor se simula con perfil de reemplazo y se avisa.
+    modelables = [j for j in juegos if j["status"] in ANTES_DEL_PRIMER_PITCHEO + EN_JUEGO]
 
 
     odds_slate = valor.obtener_odds()  # #2: {} si no hay ODDS_API_KEY
@@ -1642,7 +1651,13 @@ def correr(fecha=None):
     print(f"=== MODELO DIARIO v3 — {hoy} ===")
     print(f"Calibracion: amortigua={AMORTIGUA} | dispersion_k={DISPERSION_K} | base={AJUSTE_BASE}")
     print(f"F5 fraccion: {_frac_f5:.3f} (vs 5/9={5/9:.3f})")
-    print(f"Modelables: {len(modelables)} | Lineas de mercado: {'si' if odds_slate else 'no (sin ODDS_API_KEY)'}\n")
+    print(f"Modelables: {len(modelables)} de {len(juegos)} en el calendario | "
+          f"Lineas de mercado: {'si' if odds_slate else 'no (sin ODDS_API_KEY)'}")
+    # Si un juego no sale en la pagina, la razon se lee aqui en vez de deducirse.
+    fuera = [j for j in juegos if j["status"] not in ANTES_DEL_PRIMER_PITCHEO + EN_JUEGO]
+    for j in fuera:
+        print(f"   fuera: {j['away_name']} @ {j['home_name']} — estado '{j['status']}'")
+    print()
 
     filas_csv = []
     totales_slate = []
@@ -1661,7 +1676,7 @@ def correr(fecha=None):
         if r["estimado"]:
             faltantes = [n for n, e in ((r['abridor_v'], r['estimado_v']),
                                         (r['abridor_c'], r['estimado_c'])) if e]
-            print(f"⚠ Sin stats de {TEMPORADA}: {', '.join(faltantes)} — estimado a nivel de reemplazo")
+            print(f"⚠ Abridor estimado a nivel de reemplazo: {', '.join(faltantes)}")
 
         totales_slate.append(r["total_esp"])
 

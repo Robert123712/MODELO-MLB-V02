@@ -345,6 +345,31 @@ class Pipeline(unittest.TestCase):
         np.testing.assert_array_equal(direct['dist_total'],other['dist_total'])
         self.assertEqual(direct['game_id'],123)
 
+    def test_a_game_without_announced_starter_is_still_simulated(self):
+        """El segundo juego de una doble cartelera no tiene abridor y salia borrado."""
+        juego = dict(self.game, away_probable_pitcher=None)
+        r = m.evaluar_juego(juego, '09/09/2026', .56)
+        self.assertIsNotNone(r)
+        self.assertEqual(r['abridor_v'], m.ABRIDOR_POR_ANUNCIAR)
+        self.assertTrue(r['estimado_v'])
+        self.assertTrue(r['estimado'])
+        self.assertFalse(r['estimado_c'])       # el otro lado si se anuncio
+        self.assertGreater(r['p_casa'], 0)
+
+    def test_neither_starter_announced_still_yields_a_projection(self):
+        juego = dict(self.game, away_probable_pitcher=None, home_probable_pitcher='')
+        r = m.evaluar_juego(juego, '09/09/2026', .56)
+        self.assertIsNotNone(r)
+        self.assertEqual(r['abridor_c'], m.ABRIDOR_POR_ANUNCIAR)
+        self.assertTrue(r['estimado_c'])
+
+    def test_an_unannounced_starter_is_not_looked_up(self):
+        """Sin nombre no hay a quien consultar: statsapi no se llama con None."""
+        juego = dict(self.game, away_probable_pitcher=None)
+        m.evaluar_juego(juego, '09/09/2026', .56)
+        consultados = [c.args[0] for c in m.datos_pitcher.call_args_list]
+        self.assertEqual(consultados, ['P2'])
+
     def test_csv_migration_doubleheader_and_dedup(self):
         import csv, os, tempfile
         from contextlib import redirect_stdout
@@ -547,6 +572,28 @@ class JuegoPublicadoSeConserva(unittest.TestCase):
         temprano = self._juego("SF", "STL", "2026-09-16T17:15:00Z")
         salida = generar_json.conservar_publicados([tarde], [temprano])
         self.assertEqual([j["visita"] for j in salida], ["SF", "MIA"])
+
+    def test_a_start_time_change_does_not_duplicate_the_game(self):
+        """MLB mueve la hora durante el dia; el partido es uno, no dos."""
+        previo = dict(self._juego("CHC", "BOS", "2026-09-25T22:05:00Z"), game_id=824706)
+        nuevo = dict(self._juego("CHC", "BOS", "2026-09-25T21:35:00Z"), game_id=824706)
+        salida = generar_json.conservar_publicados([nuevo], [previo])
+        self.assertEqual(len(salida), 1)
+        self.assertEqual(salida[0]["game_datetime"], "2026-09-25T21:35:00Z")
+
+    def test_both_halves_of_a_doubleheader_survive(self):
+        """Mismos equipos, game_id distinto: son dos juegos y los dos se publican."""
+        uno = dict(self._juego("CHC", "BOS", "2026-09-25T17:05:00Z"), game_id=824703)
+        dos = dict(self._juego("CHC", "BOS", "2026-09-25T21:35:00Z"), game_id=824706)
+        salida = generar_json.conservar_publicados([dos], [uno])
+        self.assertEqual([j["game_id"] for j in salida], [824703, 824706])
+
+    def test_a_duplicate_already_published_collapses_to_one(self):
+        """Si un archivo viejo trae el juego dos veces, se conserva una sola."""
+        a = dict(self._juego("CHC", "BOS", "2026-09-25T22:05:00Z"), game_id=824706)
+        b = dict(self._juego("CHC", "BOS", "2026-09-25T21:35:00Z"), game_id=824706)
+        salida = generar_json.conservar_publicados([], [a, b])
+        self.assertEqual(len(salida), 1)
 
     def test_the_first_run_of_the_day_has_nothing_to_keep(self):
         juego = self._juego("NYY", "MIN", "2026-09-16T17:40:00Z")

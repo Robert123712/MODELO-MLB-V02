@@ -860,9 +860,9 @@ function cardJuego(g) {
         <p class="pitcher">${g.abridor_c} · ${g.mano_c ?? '?'}</p>
         <p class="pitmeta">FIP ${fx(g.fip_c)}${g.fip_c_reciente ? ` (rec ${fx(g.fip_c_reciente)})` : ''} · ${fx(g.ip_c,1)} IP · bullpen ${fx(g.bullpen_c)}</p>
       </div>
-      ${g.estimado ? `<div style="grid-column:1/-1"><span class="aviso">⚠ ${
+      ${g.estimado ? `<div style="grid-column:1/-1"><span class="aviso">⚠ Abridor estimado a nivel de reemplazo: ${
         [g.estimado_v ? g.abridor_v : null, g.estimado_c ? g.abridor_c : null].filter(Boolean).join(' y ')
-      } sin estadísticas de temporada — estimado a nivel de reemplazo</span></div>` : ''}
+      }</span></div>` : ''}
     </div>
 
     <div class="card-body">
