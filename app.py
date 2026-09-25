@@ -137,12 +137,10 @@ def _procesar_un_juego(j, hoy, odds_slate, _frac_f5):
 def _ejecutar_simulacion(req: SimularRequest):
     hoy = req.fecha or date.today().strftime("%m/%d/%Y")
     juegos = m.statsapi.schedule(date=hoy)
-    modelables = [
-        j for j in juegos
-        if j["status"] in ("Scheduled", "Pre-Game", "Warmup")
-        and j.get("away_probable_pitcher")
-        and j.get("home_probable_pitcher")
-    ]
+    # La regla vive en modelo_diario y nada mas ahi. Cuando estaba copiada aqui,
+    # arreglarla alla no arreglaba la pagina: el segundo juego de la doble
+    # cartelera de los Yankees se simulaba en la corrida y seguia sin publicarse.
+    modelables = [j for j in juegos if m.es_modelable(j)]
 
     odds_slate = v.obtener_odds()
     _frac_f5 = m.f5_frac_liga(hoy)

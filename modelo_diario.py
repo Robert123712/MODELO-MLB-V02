@@ -1503,6 +1503,28 @@ def evaluar_juego(juego, hoy, frac_f5=None, con_bateo=False, corte=None):
     return r
 
 
+def es_modelable(juego):
+    """Si el juego se puede simular hoy, y con que exigencia segun su estado.
+
+    Antes del primer pitcheo basta el estado. Un abridor sin anunciar —segundo
+    juego de una doble cartelera, juego de bullpen— se cubre con perfil de
+    reemplazo y el partido sale marcado: exigirlo lo borraba de la pantalla sin
+    decir nada.
+
+    Ya empezado es otra cosa. statsapi BORRA el abridor probable al arrancar, asi
+    que su ausencia no significa "no se sabe" sino "ya no lo publica", y el
+    perfil de reemplazo dejaria de ser una estimacion para ser un invento. Un
+    juego en curso se conserva con la proyeccion que ya se publico antes del
+    inicio (generar_json.conservar_publicados), que es lo unico honesto que
+    queda: es lo que el modelo dijo a tiempo.
+    """
+    if juego["status"] in ANTES_DEL_PRIMER_PITCHEO:
+        return True
+    return (juego["status"] in EN_JUEGO
+            and bool(juego.get("away_probable_pitcher"))
+            and bool(juego.get("home_probable_pitcher")))
+
+
 def _perfil_reemplazo(p):
     """Perfil de un abridor sin stats de temporada (regresa de lesion, debutante).
     FIP de reemplazo peor que la liga: quien no tiene historial reciente rinde
@@ -1638,11 +1660,7 @@ def correr(fecha=None):
     # matematica de antes del primer pitcheo —abridores, parque, clima— y no
     # cambia porque el juego arranque: sigue siendo lo que el modelo dijo, que
     # es justo lo que uno quiere ver mientras el partido corre.
-    # El unico requisito es el estado. Pedir tambien abridor probable borraba de
-    # la pantalla el segundo juego de una doble cartelera y cualquier juego de
-    # bullpen: statsapi no los anuncia y el juego nunca aparecia, ni siquiera
-    # marcado. Sin abridor se simula con perfil de reemplazo y se avisa.
-    modelables = [j for j in juegos if j["status"] in ANTES_DEL_PRIMER_PITCHEO + EN_JUEGO]
+    modelables = [j for j in juegos if es_modelable(j)]
 
 
     odds_slate = valor.obtener_odds()  # #2: {} si no hay ODDS_API_KEY
@@ -1654,9 +1672,9 @@ def correr(fecha=None):
     print(f"Modelables: {len(modelables)} de {len(juegos)} en el calendario | "
           f"Lineas de mercado: {'si' if odds_slate else 'no (sin ODDS_API_KEY)'}")
     # Si un juego no sale en la pagina, la razon se lee aqui en vez de deducirse.
-    fuera = [j for j in juegos if j["status"] not in ANTES_DEL_PRIMER_PITCHEO + EN_JUEGO]
-    for j in fuera:
-        print(f"   fuera: {j['away_name']} @ {j['home_name']} — estado '{j['status']}'")
+    for j in juegos:
+        if not es_modelable(j):
+            print(f"   fuera: {j['away_name']} @ {j['home_name']} — estado '{j['status']}'")
     print()
 
     filas_csv = []

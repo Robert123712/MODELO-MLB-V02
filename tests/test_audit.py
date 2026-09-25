@@ -539,6 +539,44 @@ class MoneylineDeESPN(unittest.TestCase):
         self.assertIsNone(precios._precio(odds)["momio_casa"])
 
 
+class QueJuegosSeSimulan(unittest.TestCase):
+    """La regla que decide que aparece en pantalla, en un solo lugar."""
+
+    def _j(self, status, abv="P1", abc="P2"):
+        return {"status": status, "away_probable_pitcher": abv,
+                "home_probable_pitcher": abc, "away_name": "A", "home_name": "H"}
+
+    def test_before_first_pitch_the_state_is_enough(self):
+        for status in m.ANTES_DEL_PRIMER_PITCHEO:
+            with self.subTest(status=status):
+                self.assertTrue(m.es_modelable(self._j(status)))
+                # Sin abridor anunciado tambien: se cubre con perfil de reemplazo.
+                self.assertTrue(m.es_modelable(self._j(status, abv=None)))
+                self.assertTrue(m.es_modelable(self._j(status, abv=None, abc="")))
+
+    def test_a_game_in_progress_needs_the_starters_statsapi_still_publishes(self):
+        """Ya empezado, la falta de abridor es un borrado, no un dato que falte:
+        el perfil de reemplazo mentiria. Ese juego se conserva, no se re-simula."""
+        for status in m.EN_JUEGO:
+            with self.subTest(status=status):
+                self.assertTrue(m.es_modelable(self._j(status)))
+                self.assertFalse(m.es_modelable(self._j(status, abv=None)))
+                self.assertFalse(m.es_modelable(self._j(status, abc=None)))
+
+    def test_a_finished_or_postponed_game_is_not_simulated(self):
+        for status in ("Final", "Game Over", "Postponed", "Suspended", "Cancelled"):
+            with self.subTest(status=status):
+                self.assertFalse(m.es_modelable(self._j(status)))
+
+    def test_the_page_and_the_run_apply_the_same_rule(self):
+        """app.py tenia su propia copia del filtro y por eso arreglar la corrida
+        no arreglaba la pagina."""
+        import inspect
+        import app
+        self.assertIn("es_modelable", inspect.getsource(app._ejecutar_simulacion))
+        self.assertNotIn("probable_pitcher", inspect.getsource(app._ejecutar_simulacion))
+
+
 class JuegoPublicadoSeConserva(unittest.TestCase):
     """Un juego que ya se publico hoy no desaparece al empezar."""
 
